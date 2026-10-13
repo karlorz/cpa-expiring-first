@@ -1,0 +1,160 @@
+package router
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// DefaultSwitchAfter is how long a pinned credential must stay unavailable before the sticky
+// fallback moves the pin. It outlasts CLIProxyAPI's one-minute transient-error cooldown, so a
+// single 5xx does not move the pin, while quota exhaustion (cooldowns of hours) does.
+const DefaultSwitchAfter = 5 * time.Minute
+
+// DefaultMaxAge is how old an account's quota reading may be before it is ignored. It covers
+// two or three missed polls at a ten-minute interval.
+const DefaultMaxAge = 30 * time.Minute
+
+// Config is a validated plugin configuration. Build it with ParseConfig.
+type Config struct {
+	// providers restricts routing to these provider keys; nil means every provider.
+	providers   map[string]struct{}
+	switchAfter time.Duration
+	// pinsFile is an absolute path where pins are saved across restarts; empty keeps them in memory only.
+	pinsFile string
+	// quotaFile is an absolute path to the quota file; empty routes stickily only.
+	quotaFile string
+	maxAge    time.Duration
+	// reservePercent is quota left untouched: a window counts as exhausted at 100 - reservePercent.
+	reservePercent float64
+}
+
+// DefaultConfig routes every provider stickily, with no quota file.
+func DefaultConfig() Config {
+	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge}
+}
+
+// SwitchAfter reports the grace period before an unavailable pinned credential is replaced.
+func (c Config) SwitchAfter() time.Duration {
+	return c.switchAfter
+}
+
+// PinsFile reports where pins are saved, or "" when they live in memory only.
+func (c Config) PinsFile() string {
+	return c.pinsFile
+}
+
+// QuotaFile reports the quota file path, or "" when routing is sticky only.
+func (c Config) QuotaFile() string {
+	return c.quotaFile
+}
+
+// MaxAge reports how old an account's quota reading may be.
+func (c Config) MaxAge() time.Duration {
+	return c.maxAge
+}
+
+// ReservePercent reports the quota share left untouched on every window.
+func (c Config) ReservePercent() float64 {
+	return c.reservePercent
+}
+
+// Applies reports whether the plugin routes the given provider key.
+func (c Config) Applies(provider string) bool {
+	if c.providers == nil {
+		return true
+	}
+	_, ok := c.providers[normalizeProvider(provider)]
+	return ok
+}
+
+type rawConfig struct {
+	Providers      []string `yaml:"providers"`
+	SwitchAfter    string   `yaml:"switch_after"`
+	PinsFile       string   `yaml:"pins_file"`
+	QuotaFile      string   `yaml:"quota_file"`
+	MaxAge         string   `yaml:"max_age"`
+	ReservePercent *float64 `yaml:"reserve_percent"`
+}
+
+// ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
+// enabled and priority belong to the host and are ignored.
+func ParseConfig(raw []byte) (Config, error) {
+	var parsed rawConfig
+	if errUnmarshal := yaml.Unmarshal(raw, &parsed); errUnmarshal != nil {
+		return Config{}, fmt.Errorf("decode config: %w", errUnmarshal)
+	}
+
+	cfg := DefaultConfig()
+	var errDuration error
+	if cfg.switchAfter, errDuration = parseDuration("switch_after", parsed.SwitchAfter, cfg.switchAfter, 0); errDuration != nil {
+		return Config{}, errDuration
+	}
+	if cfg.maxAge, errDuration = parseDuration("max_age", parsed.MaxAge, cfg.maxAge, time.Minute); errDuration != nil {
+		return Config{}, errDuration
+	}
+
+	var errPath error
+	if cfg.pinsFile, errPath = parsePath("pins_file", parsed.PinsFile); errPath != nil {
+		return Config{}, errPath
+	}
+	if cfg.quotaFile, errPath = parsePath("quota_file", parsed.QuotaFile); errPath != nil {
+		return Config{}, errPath
+	}
+
+	if parsed.ReservePercent != nil {
+		reserve := *parsed.ReservePercent
+		if reserve < 0 || reserve >= 100 {
+			return Config{}, fmt.Errorf("reserve_percent must be at least 0 and below 100, got %v", reserve)
+		}
+		cfg.reservePercent = reserve
+	}
+
+	for _, provider := range parsed.Providers {
+		key := normalizeProvider(provider)
+		if key == "" {
+			continue
+		}
+		if cfg.providers == nil {
+			cfg.providers = make(map[string]struct{}, len(parsed.Providers))
+		}
+		cfg.providers[key] = struct{}{}
+	}
+	return cfg, nil
+}
+
+// parseDuration reads an optional Go duration that must be at least minimum.
+func parseDuration(name, value string, fallback, minimum time.Duration) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, errParse := time.ParseDuration(value)
+	if errParse != nil {
+		return 0, fmt.Errorf("%s: %w", name, errParse)
+	}
+	if duration < minimum {
+		return 0, fmt.Errorf("%s must be at least %s, got %s", name, minimum, value)
+	}
+	return duration, nil
+}
+
+// parsePath reads an optional absolute path. The host's working directory is not part of its
+// contract, so a relative path has no stable meaning.
+func parsePath(name, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%s must be an absolute path, got %s", name, value)
+	}
+	return filepath.Clean(value), nil
+}
+
+func normalizeProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
