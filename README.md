@@ -50,6 +50,15 @@ Both modes record the serving account as the route's pin, so sticky routing cont
 - `expiring-first: pin moved from <old> to <new>: quota ranking, window resets 2026-10-16T18:00:00Z provider=claude model=...`
 - `... : in cooldown until 2026-10-09T21:00:00Z`, `... : disabled`, `... : unavailable for 5m0s`
 
+## Stale cooldowns
+
+When an account runs out, CLIProxyAPI cools it down until the provider's reset time, which can be days away. If quota comes back earlier, for example because a limit reset was spent on the account, CLIProxyAPI would keep skipping it until that deadline. The plugin clears such cooldowns through `host.routing.reset_cooldown` (CLIProxyAPI 8.0.12 or newer):
+
+- At most once a minute, on a request, it lists the credentials in a cooldown longer than 30 minutes (quota lockouts; shorter ones are transient or auth errors).
+- It clears one only when a quota reading **taken after the plugin first saw that cooldown** shows quota left on every window. A reading from before the 429 cannot clear it, so a real lockout is never undone by stale data, and each new cooldown needs a newer reading.
+- Each clear is logged at info level: `expiring-first: cleared cooldown of <auth_id> (until …): quota reading at … shows quota left`.
+- Set `clear_stale_cooldowns: false` to turn it off. On older hosts the call fails and is logged as a warning.
+
 ## Quota file
 
 A JSON document, schema `expiring-first.quota.v1`. Any program can write it; the plugin only reads it.
@@ -108,6 +117,8 @@ plugins:
       max_age: 30m
       # Quota left untouched on every window, in percent (0 to below 100).
       reserve_percent: 0
+      # Clear quota cooldowns that newer quota readings show to be over (CLIProxyAPI 8.0.12+).
+      clear_stale_cooldowns: true
       # Sticky fallback: how long the pinned account must stay unavailable before the pin moves.
       switch_after: 5m
       # Optional absolute path that keeps pins across restarts. Omit to keep pins in memory only.
@@ -135,8 +146,9 @@ The route is read-only and protected by the management key. Each pin is the acco
 - For the providers it handles, the plugin takes precedence over `routing.strategy` and `routing.session-affinity`.
 - It leaves a request to the configured strategy when the route spans several providers, when it is a Codex pool with a websocket-enabled credential (plugins cannot see whether the client uses a websocket), or when the provider is not in `providers`.
 - Quota readings are only as fresh as the program writing the file. Running out is still noticed at once, through CLIProxyAPI's cooldown after a 429; a limit reset spent on an account is noticed at the next reading.
-- After a limit reset, CLIProxyAPI keeps skipping the account until its original cooldown ends. Clear it with `POST /v0/management/reset-quota`.
+- After a limit reset, CLIProxyAPI would keep skipping the account until its original cooldown ends. The plugin clears such cooldowns itself; see [Stale cooldowns](#stale-cooldowns).
 - It logs no credential data other than auth IDs and makes no network requests.
+- Cooldowns on a single model are not visible to plugins, so only credential-wide quota cooldowns are cleared.
 
 ## Install
 

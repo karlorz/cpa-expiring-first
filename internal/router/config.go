@@ -30,11 +30,18 @@ type Config struct {
 	maxAge    time.Duration
 	// reservePercent is quota left untouched: a window counts as exhausted at 100 - reservePercent.
 	reservePercent float64
+	// clearCooldowns lets the plugin clear quota cooldowns that newer quota readings show over.
+	clearCooldowns bool
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
 func DefaultConfig() Config {
-	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge}
+	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true}
+}
+
+// ClearCooldowns reports whether stale quota cooldowns are cleared.
+func (c Config) ClearCooldowns() bool {
+	return c.clearCooldowns
 }
 
 // SwitchAfter reports the grace period before an unavailable pinned credential is replaced.
@@ -78,6 +85,7 @@ type rawConfig struct {
 	QuotaFile      string   `yaml:"quota_file"`
 	MaxAge         string   `yaml:"max_age"`
 	ReservePercent *float64 `yaml:"reserve_percent"`
+	ClearCooldowns *bool    `yaml:"clear_stale_cooldowns"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -111,6 +119,9 @@ func ParseConfig(raw []byte) (Config, error) {
 			return Config{}, fmt.Errorf("reserve_percent must be at least 0 and below 100, got %v", reserve)
 		}
 		cfg.reservePercent = reserve
+	}
+	if parsed.ClearCooldowns != nil {
+		cfg.clearCooldowns = *parsed.ClearCooldowns
 	}
 
 	for _, provider := range parsed.Providers {

@@ -307,11 +307,81 @@ func pick(raw []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode scheduler request: %w", errUnmarshal)
 	}
-	resp, moved := scheduler.Pick(req, time.Now())
+	now := time.Now()
+	resp, moved := scheduler.Pick(req, now)
 	if moved != nil {
 		logSwitch(*moved)
 	}
+	maybeClearCooldowns(now)
 	return okEnvelope(resp)
+}
+
+// cooldownCheckInterval bounds how often picks look for stale quota cooldowns. Quota readings
+// change every few minutes, so checking more often finds nothing new.
+const cooldownCheckInterval = time.Minute
+
+var (
+	cooldownCheckMu sync.Mutex
+	// cooldownCheckAt is when the last check started; zero before the first.
+	cooldownCheckAt time.Time
+)
+
+// maybeClearCooldowns starts a check for stale quota cooldowns at most once per interval. It
+// runs in the background so a pick never waits on host callbacks.
+func maybeClearCooldowns(now time.Time) {
+	cooldownCheckMu.Lock()
+	if !cooldownCheckAt.IsZero() && now.Sub(cooldownCheckAt) < cooldownCheckInterval {
+		cooldownCheckMu.Unlock()
+		return
+	}
+	cooldownCheckAt = now
+	cooldownCheckMu.Unlock()
+	go clearStaleCooldowns()
+}
+
+// clearStaleCooldowns clears quota cooldowns that newer quota readings show to be over, for
+// example after a limit reset was spent on an exhausted account. Without this, the host keeps
+// skipping the account until the original reset time.
+func clearStaleCooldowns() {
+	states, errList := listHostAuthStates()
+	if errList != nil {
+		return
+	}
+	for _, stale := range scheduler.StaleCooldowns(states, time.Now()) {
+		if errReset := resetCooldown(stale.AuthIndex); errReset != nil {
+			// Hosts before CLIProxyAPI 8.0.12 lack the callback; each failure is a rare event.
+			logWarn(fmt.Sprintf("expiring-first: clearing cooldown of %s failed: %v", stale.AuthID, errReset))
+			continue
+		}
+		_ = hostLog(hostLogRequest{
+			Level: "info",
+			Message: fmt.Sprintf("expiring-first: cleared cooldown of %s (until %s): quota reading at %s shows quota left",
+				stale.AuthID, stale.Until.UTC().Format(time.RFC3339), stale.ReadAt.UTC().Format(time.RFC3339)),
+		})
+	}
+}
+
+// resetCooldown asks the host to clear the quota and cooldown state of one credential.
+func resetCooldown(authIndex string) error {
+	payload, errMarshal := json.Marshal(pluginapi.HostRoutingResetCooldownRequest{AuthIndex: authIndex})
+	if errMarshal != nil {
+		return errMarshal
+	}
+	raw, errCall := callHost(pluginabi.MethodHostRoutingResetCooldown, payload)
+	if errCall != nil {
+		return errCall
+	}
+	var resp envelope
+	if errUnmarshal := json.Unmarshal(raw, &resp); errUnmarshal != nil {
+		return fmt.Errorf("decode %s envelope: %w", pluginabi.MethodHostRoutingResetCooldown, errUnmarshal)
+	}
+	if !resp.OK {
+		if resp.Error != nil {
+			return fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return errors.New("host refused")
+	}
+	return nil
 }
 
 func handleManagement(raw []byte) ([]byte, error) {
@@ -394,6 +464,7 @@ func hostLog(req hostLogRequest) error {
 // messages are deliberately ignored: they can carry raw upstream error text.
 type hostAuthEntry struct {
 	ID             string    `json:"id"`
+	AuthIndex      string    `json:"auth_index"`
 	Disabled       bool      `json:"disabled"`
 	NextRetryAfter time.Time `json:"next_retry_after"`
 }
@@ -421,7 +492,7 @@ func listHostAuthStates() (map[string]router.AuthState, error) {
 	states := make(map[string]router.AuthState, len(result.Files))
 	for _, entry := range result.Files {
 		if entry.ID != "" {
-			states[entry.ID] = router.AuthState{Disabled: entry.Disabled, NextRetryAfter: entry.NextRetryAfter}
+			states[entry.ID] = router.AuthState{AuthIndex: entry.AuthIndex, Disabled: entry.Disabled, NextRetryAfter: entry.NextRetryAfter}
 		}
 	}
 	return states, nil
@@ -475,6 +546,11 @@ func pluginRegistration() registration {
 					Name:        "reserve_percent",
 					Type:        pluginapi.ConfigFieldTypeNumber,
 					Description: "Quota share left untouched: a window counts as exhausted at 100 minus this (default 0).",
+				},
+				{
+					Name:        "clear_stale_cooldowns",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "Clear quota cooldowns that newer quota readings show to be over, e.g. after a limit reset (default true; needs CLIProxyAPI 8.0.12+).",
 				},
 				{
 					Name:        "switch_after",

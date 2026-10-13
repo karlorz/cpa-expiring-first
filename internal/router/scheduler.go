@@ -60,6 +60,8 @@ type Switch struct {
 
 // AuthState is the host's runtime view of one credential.
 type AuthState struct {
+	// AuthIndex is the host's stable credential index, used to clear its cooldown.
+	AuthIndex      string
 	Disabled       bool
 	NextRetryAfter time.Time
 }
@@ -100,6 +102,11 @@ type Scheduler struct {
 	inspector Inspector
 	// quota supplies quota readings; nil routes stickily only.
 	quota QuotaSource
+
+	// cooldownSeen records when each host cooldown, keyed by credential and deadline, was first
+	// seen; see StaleCooldowns.
+	cooldownMu   sync.Mutex
+	cooldownSeen map[cooldownKey]time.Time
 
 	// saveMu serializes saves. Each save snapshots the pins while holding it, so the last
 	// write always carries the newest state. Lock order: saveMu, then mu.
