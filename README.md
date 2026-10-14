@@ -152,7 +152,7 @@ The route is read-only and protected by the management key. Each pin is the acco
 
 ## Install
 
-Download the zip for your platform from the [latest release](https://github.com/magoz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI. Remove other scheduler plugins for the same providers.
+From the [CLIProxyAPI plugin store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), or manually: download the zip for your platform from the [latest release](https://github.com/magoz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI. Remove other scheduler plugins for the same providers.
 
 ## Development
 
