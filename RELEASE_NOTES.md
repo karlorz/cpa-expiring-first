@@ -1,3 +1,9 @@
+## v0.3.3
+
+- Combine ranking and quota into one **Schedule outcome** table: order, next/last pick, saved account priority, Gemini weekly and five-hour remaining.
+- Skip Antigravity Claude/GPT/OpenAI probes and windows by default (`probe_antigravity_claude_gpt`, default false).
+- Reload the live host account list and priorities on every display refresh. Quota numbers still follow `probe_interval` or Probe now.
+
 ## v0.3.2
 
 - Show **Account selection order** above quota details for configured and observed models. Include ranked accounts, predicted next pick, last selected account, ranking reset, five-hour eligibility, saved account priority, and exclusion reasons.

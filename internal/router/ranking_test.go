@@ -151,7 +151,7 @@ func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
 		"later":     reading(weekly(10, t0.Add(2*time.Hour))),
 		"five-hour": reading(weekly(10, t0.Add(30*time.Minute)), session(100, t0.Add(10*time.Minute))),
 		"expired":   {UpdatedAt: t0.Add(-time.Hour), Windows: []QuotaWindow{weekly(10, t0.Add(time.Hour))}},
-		"scoped":    reading(QuotaWindow{Minutes: 10080, Models: []string{"claude"}, ResetsAt: t0.Add(time.Hour)}),
+		"scoped":    reading(QuotaWindow{Minutes: 10080, Models: []string{"imagen"}, ResetsAt: t0.Add(time.Hour)}),
 		"disabled":  reading(weekly(10, t0.Add(time.Minute))),
 	}
 	candidates := []pluginapi.SchedulerAuthCandidate{

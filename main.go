@@ -248,7 +248,7 @@ func configure(raw []byte) error {
 	attachPinsFile(cfg.PinsFile())
 	attachQuotaFile(cfg.QuotaFile(), cfg.MaxAge())
 	attachLive(cfg)
-	probeWorker.SetInterval(cfg.ProbeInterval())
+	probeWorker.Configure(cfg.ProbeInterval(), cfg.ProbeAntigravityClaudeGPT())
 	probeWorker.Start(hostCallbacks{})
 	return nil
 }
@@ -593,6 +593,11 @@ func pluginRegistration() registration {
 					Name:        "preview_models",
 					Type:        pluginapi.ConfigFieldTypeArray,
 					Description: "Pinned preview routes as provider/model objects. Other preview routes come from observed scheduler picks.",
+				},
+				{
+					Name:        "probe_antigravity_claude_gpt",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: only Gemini quota is probed and ranked.",
 				},
 				{
 					Name:        "live_auth_ids",

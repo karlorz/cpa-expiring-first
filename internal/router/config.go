@@ -52,6 +52,8 @@ type Config struct {
 	failClosed bool
 	// previewModels lists the provider+model routes the console previews next picks for.
 	previewModels []PreviewModel
+	// probeAntigravityClaudeGPT probes Antigravity Claude/GPT/OpenAI quota. Default is off.
+	probeAntigravityClaudeGPT bool
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
@@ -110,6 +112,10 @@ func (c Config) FailClosed() bool {
 
 // PreviewModels reports the provider+model routes the console previews, in configuration order.
 // DefaultConfig leaves it empty: the deployment supplies its own routes.
+func (c Config) ProbeAntigravityClaudeGPT() bool {
+	return c.probeAntigravityClaudeGPT
+}
+
 func (c Config) PreviewModels() []PreviewModel {
 	if len(c.previewModels) == 0 {
 		return nil
@@ -142,17 +148,18 @@ func (c Config) Providers() []string {
 }
 
 type rawConfig struct {
-	Providers      []string       `yaml:"providers"`
-	SwitchAfter    string         `yaml:"switch_after"`
-	PinsFile       string         `yaml:"pins_file"`
-	QuotaFile      string         `yaml:"quota_file"`
-	MaxAge         string         `yaml:"max_age"`
-	ReservePercent *float64       `yaml:"reserve_percent"`
-	ClearCooldowns *bool          `yaml:"clear_stale_cooldowns"`
-	ProbeInterval  string         `yaml:"probe_interval"`
-	LiveAuthIDs    []string       `yaml:"live_auth_ids"`
-	FailClosed     *bool          `yaml:"fail_closed"`
-	PreviewModels  []PreviewModel `yaml:"preview_models"`
+	Providers                 []string       `yaml:"providers"`
+	SwitchAfter               string         `yaml:"switch_after"`
+	PinsFile                  string         `yaml:"pins_file"`
+	QuotaFile                 string         `yaml:"quota_file"`
+	MaxAge                    string         `yaml:"max_age"`
+	ReservePercent            *float64       `yaml:"reserve_percent"`
+	ClearCooldowns            *bool          `yaml:"clear_stale_cooldowns"`
+	ProbeInterval             string         `yaml:"probe_interval"`
+	LiveAuthIDs               []string       `yaml:"live_auth_ids"`
+	FailClosed                *bool          `yaml:"fail_closed"`
+	PreviewModels             []PreviewModel `yaml:"preview_models"`
+	ProbeAntigravityClaudeGPT *bool          `yaml:"probe_antigravity_claude_gpt"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -195,6 +202,9 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if parsed.FailClosed != nil {
 		cfg.failClosed = *parsed.FailClosed
+	}
+	if parsed.ProbeAntigravityClaudeGPT != nil {
+		cfg.probeAntigravityClaudeGPT = *parsed.ProbeAntigravityClaudeGPT
 	}
 
 	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs))

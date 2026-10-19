@@ -234,6 +234,9 @@ func (s *Scheduler) pick(req pluginapi.SchedulerPickRequest, now time.Time) (res
 	// Read quota outside the lock: the source may touch the file system.
 	if source != nil {
 		if quota := source.Load(); quota != nil {
+			if !cfg.ProbeAntigravityClaudeGPT() {
+				quota = dropClaudeGPTQuota(quota)
+			}
 			if choice, ok := rankByQuota(req.Candidates, quota, key.model, now, cfg.MaxAge(), cfg.ReservePercent()); ok {
 				ranked = true
 				return s.followQuota(key, choice, now)
@@ -388,6 +391,9 @@ func (s *Scheduler) Preview(candidates []pluginapi.SchedulerAuthCandidate, provi
 	quota := source.Load()
 	if quota == nil {
 		return "", false
+	}
+	if !cfg.ProbeAntigravityClaudeGPT() {
+		quota = dropClaudeGPTQuota(quota)
 	}
 	choice, okChoice := rankByQuota(candidates, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
 	if !okChoice {

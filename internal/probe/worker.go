@@ -86,6 +86,8 @@ type Worker struct {
 	snapshot Snapshot
 	// running guards against overlapping cycles when a refresh is requested while one runs.
 	running bool
+	// probeAntigravityClaudeGPT probes Antigravity Claude/GPT/OpenAI quota. Default is off.
+	probeAntigravityClaudeGPT bool
 	// cancel stops the background loop; nil while it is not running.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -98,12 +100,25 @@ func NewWorker(memory *router.MemoryQuota) *Worker {
 
 // SetInterval changes how often the background loop probes.
 func (w *Worker) SetInterval(interval time.Duration) {
+	w.Configure(interval, w.ProbeAntigravityClaudeGPT())
+}
+
+// Configure sets the probe interval and whether Antigravity Claude/GPT/OpenAI quota is probed.
+func (w *Worker) Configure(interval time.Duration, probeAntigravityClaudeGPT bool) {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
 	w.mu.Lock()
 	w.interval = interval
+	w.probeAntigravityClaudeGPT = probeAntigravityClaudeGPT
 	w.mu.Unlock()
+}
+
+// ProbeAntigravityClaudeGPT reports whether Antigravity Claude/GPT/OpenAI quota is probed.
+func (w *Worker) ProbeAntigravityClaudeGPT() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.probeAntigravityClaudeGPT
 }
 
 // Start launches the background loop with an immediate first probe cycle. Each wait re-reads
@@ -195,6 +210,9 @@ func (w *Worker) Refresh(ctx context.Context, callbacks host.Callbacks) Snapshot
 		return w.Snapshot()
 	}
 	accounts := retainEvidence(w.Snapshot().Accounts, w.probeAll(ctx, client, credentials))
+	if !w.ProbeAntigravityClaudeGPT() {
+		accounts = dropClaudeGPTAccounts(accounts)
+	}
 	return w.publish(Snapshot{At: time.Now().UTC(), Accounts: accounts})
 }
 
@@ -223,7 +241,7 @@ func (w *Worker) probeAll(ctx context.Context, client *host.Client, credentials 
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			accounts[index] = probeCredential(ctx, client, item)
+			accounts[index] = probeCredential(ctx, client, item, w.ProbeAntigravityClaudeGPT())
 		}()
 	}
 	wg.Wait()
@@ -232,11 +250,11 @@ func (w *Worker) probeAll(ctx context.Context, client *host.Client, credentials 
 
 // probeCredential probes one credential and returns one account entry per model group. An
 // Antigravity credential is probed once per group because the provider meters them separately.
-func probeCredential(ctx context.Context, client *host.Client, item credential) Account {
+func probeCredential(ctx context.Context, client *host.Client, item credential, probeAntigravityClaudeGPT bool) Account {
 	now := time.Now().UTC()
 	switch item.provider {
 	case "antigravity":
-		return probeAntigravityCredential(ctx, client, item, now)
+		return probeAntigravityCredential(ctx, client, item, now, probeAntigravityClaudeGPT)
 	case "claude":
 		result := claude.NewProber(client, fixedClock{now: now}).Probe(ctx, claude.ProbeRequest{
 			AuthID:           item.id,
@@ -294,7 +312,7 @@ func probeCredential(ctx context.Context, client *host.Client, item credential) 
 // probeAntigravityCredential probes both Antigravity model groups. The gemini group's windows
 // apply only to Gemini models and the claude_gpt group's only to Claude, GPT and OpenAI models,
 // matching how the provider meters them.
-func probeAntigravityCredential(ctx context.Context, client *host.Client, item credential, now time.Time) Account {
+func probeAntigravityCredential(ctx context.Context, client *host.Client, item credential, now time.Time, probeClaudeGPT bool) Account {
 	prober := antigravity.NewProber(client, fixedClock{now: now})
 	account := Account{
 		AuthID:     item.id,
@@ -302,7 +320,11 @@ func probeAntigravityCredential(ctx context.Context, client *host.Client, item c
 		Provider:   item.provider,
 		ObservedAt: now,
 	}
-	for _, group := range []antigravity.ModelGroup{antigravity.ModelGroupGemini, antigravity.ModelGroupClaudeGPT} {
+	groups := []antigravity.ModelGroup{antigravity.ModelGroupGemini}
+	if probeClaudeGPT {
+		groups = append(groups, antigravity.ModelGroupClaudeGPT)
+	}
+	for _, group := range groups {
 		result := prober.Probe(ctx, antigravity.ProbeRequest{
 			AuthID:      item.id,
 			AuthIndex:   item.authIndex,
@@ -375,4 +397,33 @@ func retainEvidence(previous, current []Account) []Account {
 		}
 	}
 	return current
+}
+
+func dropClaudeGPTAccounts(accounts []Account) []Account {
+	for index := range accounts {
+		windows := accounts[index].Windows[:0]
+		for _, window := range accounts[index].Windows {
+			if router.ClaudeGPTWindow(window.Models) {
+				continue
+			}
+			windows = append(windows, window)
+		}
+		accounts[index].Windows = windows
+		accounts[index].Error = dropClaudeGPTError(accounts[index].Error)
+	}
+	return accounts
+}
+
+func dropClaudeGPTError(message string) string {
+	parts := strings.Split(message, "; ")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.HasPrefix(strings.TrimSpace(part), "claude_gpt:") {
+			continue
+		}
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			kept = append(kept, trimmed)
+		}
+	}
+	return strings.Join(kept, "; ")
 }

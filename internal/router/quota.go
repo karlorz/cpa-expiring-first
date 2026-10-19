@@ -286,6 +286,9 @@ func quotaCandidateRank(candidate pluginapi.SchedulerAuthCandidate, quota Quota,
 // RankCandidates returns the same quota ordering used by picks, followed by excluded accounts.
 // Runtime attributes are supplied by the console's host listing; request candidates are already filtered.
 func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, provider, model string, now time.Time, cfg Config) []CandidateRank {
+	if !cfg.ProbeAntigravityClaudeGPT() {
+		quota = dropClaudeGPTQuota(quota)
+	}
 	rows := make([]CandidateRank, 0, len(candidates))
 	delegated := normalizeProvider(provider) == "codex" && anyWebsocketCandidate(eligibleRankCandidates(candidates, now))
 	for _, candidate := range candidates {
@@ -369,4 +372,37 @@ func eligibleRankCandidates(candidates []pluginapi.SchedulerAuthCandidate, now t
 		}
 	}
 	return eligible
+}
+
+// ClaudeGPTWindow reports an Antigravity Claude/GPT/OpenAI quota window.
+func ClaudeGPTWindow(models []string) bool {
+	if len(models) == 0 {
+		return false
+	}
+	for _, model := range models {
+		switch strings.ToLower(strings.TrimSpace(model)) {
+		case "claude", "gpt", "openai":
+			return true
+		}
+	}
+	return false
+}
+
+func dropClaudeGPTQuota(quota Quota) Quota {
+	if len(quota) == 0 {
+		return quota
+	}
+	out := make(Quota, len(quota))
+	for id, account := range quota {
+		windows := make([]QuotaWindow, 0, len(account.Windows))
+		for _, window := range account.Windows {
+			if ClaudeGPTWindow(window.Models) {
+				continue
+			}
+			windows = append(windows, window)
+		}
+		account.Windows = windows
+		out[id] = account
+	}
+	return out
 }

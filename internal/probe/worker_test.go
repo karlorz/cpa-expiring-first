@@ -113,46 +113,56 @@ func TestRefreshMapsProbesIntoRouterWindows(t *testing.T) {
 	}
 }
 
-// TestAntigravityProbesBothModelGroups checks that one Antigravity credential is probed once per
-// group and that each group's windows carry the matching model patterns.
-func TestAntigravityProbesBothModelGroups(t *testing.T) {
-	var urls []string
-	fake := &fakeHost{
+func antigravityQuotaHost(t *testing.T, urls *[]string) *fakeHost {
+	t.Helper()
+	return &fakeHost{
 		files: []host.AuthFile{{ID: "antigravity.json", AuthIndex: "idx-ag", Provider: "antigravity"}},
 		auth:  map[string]json.RawMessage{"idx-ag": json.RawMessage(`{"access_token":"ag-token","project_id":"proj"}`)},
 		httpDo: func(req host.HTTPRequest) (host.HTTPResponse, error) {
-			urls = append(urls, req.URL)
+			*urls = append(*urls, req.URL)
 			return host.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"groups":[
 				{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2026-10-12T12:00:00Z"}]},
 				{"displayName":"Claude and GPT Models","buckets":[{"window":"weekly","remainingFraction":0.1,"resetTime":"2026-10-16T12:00:00Z"}]}
 			]}`)}, nil
 		},
 	}
+}
+
+// TestAntigravityDefaultProbesGeminiOnly leaves Claude/GPT/OpenAI quota unprobed.
+func TestAntigravityDefaultProbesGeminiOnly(t *testing.T) {
+	var urls []string
 	memory := router.NewMemoryQuota()
 	worker := NewWorker(memory)
-	worker.Refresh(context.Background(), fake)
+	worker.Refresh(context.Background(), antigravityQuotaHost(t, &urls))
+	if len(urls) != 1 {
+		t.Fatalf("probe URLs = %v, want one Gemini request", urls)
+	}
+	account, okAccount := memory.Load()["antigravity.json"]
+	if !okAccount || len(account.Windows) != 1 || strings.Join(account.Windows[0].Models, ",") != "gemini" {
+		t.Fatalf("windows = %+v, want only gemini", account.Windows)
+	}
+}
 
-	// The probe tries the model groups in order, and stops at the first URL that answers.
+// TestAntigravityClaudeGPTProbeOptIn probes both groups when enabled.
+func TestAntigravityClaudeGPTProbeOptIn(t *testing.T) {
+	var urls []string
+	memory := router.NewMemoryQuota()
+	worker := NewWorker(memory)
+	worker.Configure(DefaultInterval, true)
+	worker.Refresh(context.Background(), antigravityQuotaHost(t, &urls))
 	if len(urls) < 2 {
 		t.Fatalf("probe URLs = %v, want one request per model group", urls)
 	}
-	quota := memory.Load()
-	account, okAccount := quota["antigravity.json"]
+	account, okAccount := memory.Load()["antigravity.json"]
 	if !okAccount {
-		t.Fatalf("quota = %+v, want the antigravity account", quota)
+		t.Fatal("missing antigravity account")
 	}
-	if len(account.Windows) != 2 {
-		t.Fatalf("windows = %+v, want one per model group", account.Windows)
-	}
-	seen := map[string][]string{}
+	seen := map[string]bool{}
 	for _, window := range account.Windows {
-		seen[strings.Join(window.Models, ",")] = window.Models
+		seen[strings.Join(window.Models, ",")] = true
 	}
-	if _, okGemini := seen["gemini"]; !okGemini {
-		t.Errorf("no gemini-scoped window: %+v", account.Windows)
-	}
-	if _, okClaudeGPT := seen["claude,gpt,openai"]; !okClaudeGPT {
-		t.Errorf("no claude_gpt-scoped window: %+v", account.Windows)
+	if !seen["gemini"] || !seen["claude,gpt,openai"] {
+		t.Fatalf("windows = %+v, want gemini and claude_gpt", account.Windows)
 	}
 }
 

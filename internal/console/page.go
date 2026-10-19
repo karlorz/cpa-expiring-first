@@ -114,13 +114,14 @@ const StatusHTML = `<!doctype html>
   </section>
 
   <section class="card">
-    <h2>Account selection order</h2>
-    <p class="muted">Model-specific order from the scheduler's quota ranking. The first eligible account is the predicted next pick. Last selected records the latest scheduler choice. When all accounts are excluded from quota ranking, sticky fallback or host delegation applies. Host model support and request-specific cooldowns are applied when a request arrives. Account priority breaks reset-time ties.</p>
+    <h2>Schedule outcome</h2>
+    <p class="muted">Live account list and saved account priority from the host, ranked by this scheduler. #1 is the predicted next pick. Last selected is the latest actual pick. Weekly and five-hour columns are Gemini quota for Antigravity; Claude/GPT/OpenAI quota is not probed unless enabled. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
     <div id="account-order"></div>
   </section>
 
   <section class="card">
-    <h2>Accounts and quota windows</h2>
+    <h2>Other quota readings</h2>
+    <p class="muted">Providers without a schedule-outcome row. Antigravity Claude/GPT/OpenAI windows are omitted.</p>
     <div id="quota"></div>
   </section>
 
@@ -268,18 +269,23 @@ const StatusHTML = `<!doctype html>
       var section = el('div');
       section.appendChild(el('h3', 'muted', route.provider + ' / ' + route.model));
       var rows = (route.accounts || []).map(function (account) {
-        var result = account.order ? ('#' + account.order) : 'Excluded from quota ranking';
+        var result = account.order ? ('#' + account.order) : 'Excluded';
         if (account.next_pick) { result += ' · next pick'; }
         if (account.last_selected) { result += ' · last selected'; }
-        return [result, account.auth, account.ranking_reset_at ? new Date(account.ranking_reset_at).toLocaleString() + ' · ' + account.ranking_reset_in : (account.order ? account.ranking_reset_in : '—'), account.five_hour, account.account_priority, account.reason];
+        return [result, account.auth, account.account_priority, account.weekly || '—', account.five_hour || '—', account.reason];
       });
-      section.appendChild(table(['Order / outcome', 'Account (private label)', 'Ranking reset', 'Five-hour quota', 'Account priority', 'Reason'], rows));
+      section.appendChild(table(['Order / outcome', 'Account', 'Account priority', 'Weekly', 'Five-hour', 'Reason'], rows));
       orderSections.push(section);
     });
     replace(document.getElementById('account-order'), orderSections.length ? orderSections : [el('div', 'empty', 'Configure preview_models or send a request to see the account order.')]);
 
+    var rankedAuth = {};
+    (data.previews || []).forEach(function (route) {
+      (route.accounts || []).forEach(function (account) { rankedAuth[account.auth] = true; });
+    });
     var quotaRows = [];
     (data.quota || []).forEach(function (account) {
+      if (rankedAuth[account.auth] || rankedAuth[account.auth_id]) { return; }
       var label = el('div');
       label.appendChild(el('code', null, account.auth || account.auth_id));
       if (account.group) { label.appendChild(el('div', 'muted', 'group ' + account.group)); }

@@ -599,7 +599,25 @@ func TestAccountOrderIsModelScopedRedactedAndReadOnly(t *testing.T) {
 	if strings.Contains(string(raw), "antigravity-primary-account.json") {
 		t.Fatal("raw credential leaked")
 	}
-	if strings.Index(StatusHTML, "Account selection order") > strings.Index(StatusHTML, "Accounts and quota windows") {
-		t.Fatal("ranking must precede quota")
+	if !strings.Contains(StatusHTML, "Schedule outcome") {
+		t.Fatal("compact schedule outcome heading missing")
+	}
+	if strings.Contains(StatusHTML, "Account selection order") {
+		t.Fatal("old ranking heading still present")
+	}
+}
+
+func TestQuotaViewOmitsClaudeGPTWindows(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.quota["antigravity-primary-account.json"] = router.QuotaAccount{
+		UpdatedAt: now,
+		Windows: []router.QuotaWindow{
+			{Minutes: 10080, UsedPercent: 13, ResetsAt: now.Add(24 * time.Hour), Models: []string{"gemini"}},
+			{Minutes: 10080, UsedPercent: 0, ResetsAt: now.Add(48 * time.Hour), Models: []string{"claude", "gpt", "openai"}},
+		},
+	}
+	view := handler.quotaView(context.Background())
+	if len(view) != 1 || len(view[0].Windows) != 1 || view[0].Windows[0].Models[0] != "gemini" {
+		t.Fatalf("quota view = %+v, want only gemini windows", view)
 	}
 }

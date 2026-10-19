@@ -19,7 +19,7 @@ Every `probe_interval` (default `5m`) the plugin reads each credential's quota t
 
 | Provider | Probe | Windows |
 | --- | --- | --- |
-| Antigravity | `retrieveUserQuotaSummary` | 5-hour and weekly, scoped to `gemini` and `claude_gpt` model groups |
+| Antigravity | `retrieveUserQuotaSummary` | 5-hour and weekly for **Gemini** by default. Claude/GPT/OpenAI (`claude_gpt`) is off unless `probe_antigravity_claude_gpt: true` |
 | Claude | unified rate-limit headers, else usage JSON | 5-hour and weekly |
 | Codex | `wham/usage` | 5-hour and weekly (monthly on free plans) |
 | xAI | plan classification plus the OAuth weekly billing window | weekly |
@@ -122,11 +122,11 @@ It needs no management key and shows:
 - Plugin registration, observed routing activity, version, probe interval, last probe time, and Live Voice pool. Registration alone does not prove that the host selected this scheduler.
 - The current **pins** table: provider, model, redacted auth, pin time, last pick time and availability.
 - **Per-account windows**: provider, redacted auth, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
-- **Account selection order** for each configured or observed model: ranked accounts, predicted next pick, last selected account, ranking reset, five-hour eligibility, account priority, and exclusion reasons. The order shares the scheduler’s quota eligibility and reset comparison logic; request-time model support and cooldowns can change the candidates. Saved account priorities stay as configured.
+- **Schedule outcome** for each configured or observed model: live host accounts, saved account priority, predicted next pick, last selected account, Gemini weekly/five-hour quota, and exclusion reasons. Display refresh reloads the account list and priorities; quota numbers update on `probe_interval` or Probe now. Antigravity Claude/GPT/OpenAI quota is not probed unless `probe_antigravity_claude_gpt: true`.
 - **Model previews** from `preview_models` and routes observed in scheduler picks. Previews estimate quota ranking from account-level eligibility; the host applies model support, request restrictions, and model-specific cooldowns at request time.
 - **Pick counts** per provider (handled and quota-ranked). These count scheduler decisions; successful upstream completions require request logs.
 
-The cached display refreshes every 30 seconds while visible. **Refresh display** reloads cached data. **Probe now** runs provider probes using a management key kept only in page memory. Configuration stays in CLIProxyAPI's plugin config fields. Failed probes retain the last successful reading with its original timestamp until `max_age` expires; the page shows the latest error alongside retained evidence.
+The cached display refreshes every 30 seconds while visible. **Refresh display** reloads the live host account list and priorities plus the last quota snapshot. **Probe now** runs provider probes using a management key kept only in page memory. Auth Files can look newer than quota numbers until the next probe. Configuration stays in CLIProxyAPI's plugin config fields. Failed probes retain the last successful reading with its original timestamp until `max_age` expires; the page shows the latest error alongside retained evidence.
 
 The management routes below are protected by the management key:
 
@@ -219,6 +219,8 @@ plugins:
       preview_models:
         - provider: antigravity
           model: gemini-3.8-flash-high
+      # Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only.
+      probe_antigravity_claude_gpt: false
       # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
       live_auth_ids: [codex-live-account.json]
       # Reject a Live request when no live_auth_ids credential is available (default true).

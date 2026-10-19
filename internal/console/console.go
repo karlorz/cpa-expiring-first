@@ -231,6 +231,7 @@ type RankingView struct {
 	ResetAt      *time.Time `json:"ranking_reset_at,omitempty"`
 	ResetIn      string     `json:"ranking_reset_in"`
 	FiveHour     string     `json:"five_hour"`
+	Weekly       string     `json:"weekly"`
 	Reason       string     `json:"reason"`
 	Next         bool       `json:"next_pick"`
 	LastSelected bool       `json:"last_selected"`
@@ -318,6 +319,9 @@ func (h *Handler) quotaView(ctx context.Context) []QuotaView {
 		view.ProbeAge = ageString(now, account.UpdatedAt)
 		view.Stale = account.UpdatedAt.IsZero() || now.Sub(account.UpdatedAt) > h.sources.Config().MaxAge()
 		for _, window := range account.Windows {
+			if router.ClaudeGPTWindow(window.Models) {
+				continue
+			}
 			view.Windows = append(view.Windows, windowView(now, window))
 		}
 	}
@@ -451,7 +455,8 @@ func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
 					reason = "Ordered by reset, priority, then auth ID"
 				}
 			}
-			entry := RankingView{Order: row.Order, Auth: Redact(row.AuthID), Priority: row.Priority, FiveHour: row.FiveHour, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
+			weekly, fiveHour := quotaSummary(quota[row.AuthID], views[index].Model, now)
+			entry := RankingView{Order: row.Order, Auth: Redact(row.AuthID), Priority: row.Priority, FiveHour: fiveHour, Weekly: weekly, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
 			if !row.ResetsAt.IsZero() {
 				reset := row.ResetsAt.UTC()
 				entry.ResetAt = &reset
@@ -643,4 +648,44 @@ func ageString(now, moment time.Time) string {
 	default:
 		return fmt.Sprintf("%dd %s", int(delta.Hours()/24), suffix)
 	}
+}
+
+func quotaSummary(account router.QuotaAccount, model string, now time.Time) (weekly, fiveHour string) {
+	weekly, fiveHour = "—", "—"
+	model = strings.ToLower(model)
+	for _, window := range account.Windows {
+		if router.ClaudeGPTWindow(window.Models) {
+			continue
+		}
+		if len(window.Models) > 0 {
+			applies := false
+			for _, pattern := range window.Models {
+				if strings.Contains(model, pattern) {
+					applies = true
+					break
+				}
+			}
+			if !applies {
+				continue
+			}
+		}
+		left := 100 - window.UsedPercent
+		if left < 0 {
+			left = 0
+		}
+		if left > 100 {
+			left = 100
+		}
+		reset := "not started"
+		if !window.ResetsAt.IsZero() {
+			reset = ageString(now, window.ResetsAt.UTC())
+		}
+		text := fmt.Sprintf("%.0f%% left · %s", left, reset)
+		if window.Minutes >= 24*60 {
+			weekly = text
+			continue
+		}
+		fiveHour = text
+	}
+	return weekly, fiveHour
 }

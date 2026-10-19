@@ -109,4 +109,17 @@ func TestDefaultConfigHasNoPinnedExamples(t *testing.T) {
 	if models := cfg.PreviewModels(); len(models) != 0 {
 		t.Fatalf("ParseConfig without preview_models = %+v, want none", models)
 	}
+	if cfg.ProbeAntigravityClaudeGPT() {
+		t.Fatal("ProbeAntigravityClaudeGPT defaults on")
+	}
+}
+
+func TestParseConfigProbeAntigravityClaudeGPT(t *testing.T) {
+	cfg, err := ParseConfig([]byte("probe_antigravity_claude_gpt: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ProbeAntigravityClaudeGPT() {
+		t.Fatal("ProbeAntigravityClaudeGPT() = false, want true")
+	}
 }
