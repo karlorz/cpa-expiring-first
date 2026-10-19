@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,9 @@ const DefaultSwitchAfter = 5 * time.Minute
 // two or three missed polls at a ten-minute interval.
 const DefaultMaxAge = 30 * time.Minute
 
+// DefaultProbeInterval is how often the in-process probes refresh every credential's readings.
+const DefaultProbeInterval = 5 * time.Minute
+
 // Config is a validated plugin configuration. Build it with ParseConfig.
 type Config struct {
 	// providers restricts routing to these provider keys; nil means every provider.
@@ -32,11 +36,17 @@ type Config struct {
 	reservePercent float64
 	// clearCooldowns lets the plugin clear quota cooldowns that newer quota readings show over.
 	clearCooldowns bool
+	// probeInterval is how often the in-process probes refresh readings.
+	probeInterval time.Duration
+	// liveAuthIDs is the allowlist for Codex Live requests; empty leaves Live traffic to the host.
+	liveAuthIDs []string
+	// failClosed rejects a Live request when no allowlisted credential is available.
+	failClosed bool
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
 func DefaultConfig() Config {
-	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true}
+	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true}
 }
 
 // ClearCooldowns reports whether stale quota cooldowns are cleared.
@@ -69,6 +79,25 @@ func (c Config) ReservePercent() float64 {
 	return c.reservePercent
 }
 
+// ProbeInterval reports how often the in-process probes refresh readings.
+func (c Config) ProbeInterval() time.Duration {
+	if c.probeInterval <= 0 {
+		return DefaultProbeInterval
+	}
+	return c.probeInterval
+}
+
+// LiveAuthIDs reports the Codex Live allowlist; empty leaves Live requests to the host.
+func (c Config) LiveAuthIDs() []string {
+	return c.liveAuthIDs
+}
+
+// FailClosed reports whether a Live request without an available allowlisted credential is
+// rejected rather than delegated to the built-in scheduler.
+func (c Config) FailClosed() bool {
+	return c.failClosed
+}
+
 // Applies reports whether the plugin routes the given provider key.
 func (c Config) Applies(provider string) bool {
 	if c.providers == nil {
@@ -76,6 +105,19 @@ func (c Config) Applies(provider string) bool {
 	}
 	_, ok := c.providers[normalizeProvider(provider)]
 	return ok
+}
+
+// Providers reports the configured provider restriction, or nil when every provider is routed.
+func (c Config) Providers() []string {
+	if c.providers == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(c.providers))
+	for key := range c.providers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type rawConfig struct {
@@ -86,6 +128,9 @@ type rawConfig struct {
 	MaxAge         string   `yaml:"max_age"`
 	ReservePercent *float64 `yaml:"reserve_percent"`
 	ClearCooldowns *bool    `yaml:"clear_stale_cooldowns"`
+	ProbeInterval  string   `yaml:"probe_interval"`
+	LiveAuthIDs    []string `yaml:"live_auth_ids"`
+	FailClosed     *bool    `yaml:"fail_closed"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -102,6 +147,9 @@ func ParseConfig(raw []byte) (Config, error) {
 		return Config{}, errDuration
 	}
 	if cfg.maxAge, errDuration = parseDuration("max_age", parsed.MaxAge, cfg.maxAge, time.Minute); errDuration != nil {
+		return Config{}, errDuration
+	}
+	if cfg.probeInterval, errDuration = parseDuration("probe_interval", parsed.ProbeInterval, cfg.probeInterval, time.Minute); errDuration != nil {
 		return Config{}, errDuration
 	}
 
@@ -122,6 +170,21 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if parsed.ClearCooldowns != nil {
 		cfg.clearCooldowns = *parsed.ClearCooldowns
+	}
+	if parsed.FailClosed != nil {
+		cfg.failClosed = *parsed.FailClosed
+	}
+
+	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs))
+	for _, id := range parsed.LiveAuthIDs {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if _, okSeen := seenLive[id]; okSeen {
+			continue
+		}
+		seenLive[id] = struct{}{}
+		cfg.liveAuthIDs = append(cfg.liveAuthIDs, id)
 	}
 
 	for _, provider := range parsed.Providers {

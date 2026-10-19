@@ -2,9 +2,33 @@
 
 A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin for pools of subscription accounts. It sends each request to the account whose quota **expires first**: the available account whose longest usage window (usually the weekly one) resets soonest and still has quota left. Quota that would reset unused is spent before quota that would still be there next week.
 
-The plugin does not call any provider. It reads a [quota file](#quota-file) that another program keeps up to date, for example the [usage dashboard](https://github.com/magoz/usage). Without fresh quota readings it routes like [sticky-fill-first](https://github.com/magoz/cpa-sticky-fill-first): it stays on the account currently serving until that account runs out.
+This is the `karlorz` fork of [magoz/cpa-expiring-first](https://github.com/magoz/cpa-expiring-first). It keeps the weekly-soonest ranking and the sticky fallback, and adds:
 
-Plugin ID: `expiring-first`. Requires CLIProxyAPI 7.3.8 or newer (scheduler plugins that see every priority tier).
+- **In-process quota probes** for Antigravity, Claude, Codex and xAI, run on a background interval. The plugin no longer depends on an external writer for its readings.
+- **An optional quota file overlay**, which can still override individual accounts (see [Quota file](#quota-file)).
+- **Live Voice passthrough** for Codex Live/Realtime traffic, so this can be the only scheduler plugin installed.
+- **A console page** showing quota windows, the next pick per provider and the picks this plugin served.
+
+Without fresh readings it routes like [sticky-fill-first](https://github.com/magoz/cpa-sticky-fill-first): it stays on the account currently serving until that account runs out.
+
+Plugin ID: `expiring-first`. Requires CLIProxyAPI 8.0.12 or newer (`host.http.do`, `host.auth.list` and `host.routing.reset_cooldown`).
+
+## Probes
+
+Every `probe_interval` (default `5m`) the plugin reads each credential's quota through the host's own HTTP transport (`host.http.do`), never through a provider SDK, and publishes one snapshot in memory. Picks read that snapshot; they never call a provider. The only credential write the plugin makes is the existing `host.routing.reset_cooldown` call that clears stale cooldowns.
+
+| Provider | Probe | Windows |
+| --- | --- | --- |
+| Antigravity | `retrieveUserQuotaSummary` | 5-hour and weekly, **once per model group**: `gemini` and `claude_gpt` |
+| Claude | unified rate-limit headers, else usage JSON | 5-hour and weekly |
+| Codex | `wham/usage` | 5-hour and weekly (monthly on free plans) |
+| xAI | plan classification plus the OAuth weekly billing window | weekly |
+
+`used_percent` is `100 - remaining`, `auth_id` is the CLIProxyAPI credential ID (the auth file name), and each reading carries the reset time the provider reports.
+
+**Antigravity model groups.** One Antigravity credential is metered twice. The `gemini` group's windows apply only to models containing `gemini`; the `claude_gpt` group's windows apply only to models containing `claude`, `gpt` or `openai`. Both are probed for every Antigravity credential, and the ranking uses whichever group matches the requested model. The console page shows the group for each account.
+
+**Claude, Codex and xAI** have a single metered pool per credential, so their windows apply to every model of that provider.
 
 ## Behavior
 
@@ -28,9 +52,9 @@ In practice:
 | That account runs out | CLIProxyAPI cools it down after its 429, so it drops out, and the next soonest takes over. |
 | Its five-hour limit runs out | Another account covers until the five-hour window resets, then traffic returns: its weekly window still resets first. |
 | Its weekly window resets | Its new window has not started, so the account that resets next takes over. Traffic does not snap back. |
-| A limit reset or a provider change moves a reset date | The next quota reading re-ranks the accounts. |
+| A limit reset or a provider change moves a reset date | The next probe cycle re-ranks the accounts. |
 
-**Without fresh quota readings** (no `quota_file`, the file is missing or unreadable, or no candidate has a usable reading), the plugin routes stickily:
+**Without fresh readings** (no probe has succeeded yet, the readings are older than `max_age`, or no candidate has a usable reading), the plugin routes stickily:
 
 - Each route stays on the account that last served it, even when a higher-priority account is also available.
 - When that account is missing from the candidates, the request goes to the `fill-first` choice (highest priority, then lowest auth ID). Whether the route moves there depends on why the account is missing. The plugin asks CLIProxyAPI for its runtime state (`host.auth.list`, at most once every 2 seconds):
@@ -50,16 +74,81 @@ Both modes record the serving account as the route's pin, so sticky routing cont
 - `expiring-first: pin moved from <old> to <new>: quota ranking, window resets 2026-10-16T18:00:00Z provider=claude model=...`
 - `... : in cooldown until 2026-10-09T21:00:00Z`, `... : disabled`, `... : unavailable for 5m0s`
 
+## Live Voice
+
+Codex Live/Realtime traffic (`gpt-live-1-codex`) is decided by its own allowlist, ahead of the weekly-soonest ranking:
+
+- Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic.
+- A Live request is never answered by the weekly-soonest ranking. With **no** `live_auth_ids` configured, the plugin leaves the request unhandled, so CLIProxyAPI's built-in scheduler decides, exactly as if this plugin were not installed.
+- With an allowlist, the plugin picks from the matching candidates: `fill-first` (default) or `round-robin`.
+- `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no allowlisted credential is available; `fail_closed: false` delegates to the built-in scheduler instead.
+
+This is the same classification and selection as [karlorz/cpa-live-voice](https://github.com/karlorz/cpa-live-voice), folded into this plugin so the two no longer have to run together.
+
+### Running alongside cpa-live-voice
+
+Only one scheduler plugin is consulted: CLIProxyAPI uses the highest-priority one. To make `expiring-first` the sole scheduler, give it a **higher** priority than `cpa-live-voice`:
+
+```yaml
+plugins:
+  configs:
+    expiring-first:
+      priority: 110   # consulted first, and handles Live itself
+    cpa-live-voice:
+      priority: 100   # never reached; remove it, or keep it as a fallback for other hosts
+```
+
+With `priority: 110` on `expiring-first` and `100` on `cpa-live-voice`, `expiring-first` serves both Live and ordinary traffic and `cpa-live-voice` is never invoked. Remove `cpa-live-voice` if you do not need it elsewhere.
+
 ## Stale cooldowns
 
-When an account runs out, CLIProxyAPI cools it down until the provider's reset time, which can be days away. If quota comes back earlier, for example because a limit reset was spent on the account, CLIProxyAPI would keep skipping it until that deadline. The plugin clears such cooldowns through `host.routing.reset_cooldown` (CLIProxyAPI 8.0.12 or newer):
+When an account runs out, CLIProxyAPI cools it down until the provider's reset time, which can be days away. If quota comes back earlier, for example because a limit reset was spent on the account, CLIProxyAPI would keep skipping it until that deadline. The plugin clears such cooldowns through `host.routing.reset_cooldown`:
 
 - At most once a minute, on a request, it lists the credentials in a cooldown longer than 30 minutes (quota lockouts; shorter ones are transient or auth errors).
 - It clears one only when a quota reading **taken after the plugin first saw that cooldown** shows quota left on every window. A reading from before the 429 cannot clear it, so a real lockout is never undone by stale data, and each new cooldown needs a newer reading.
 - Each clear is logged at info level: `expiring-first: cleared cooldown of <auth_id> (until …): quota reading at … shows quota left`.
-- Set `clear_stale_cooldowns: false` to turn it off. On older hosts the call fails and is logged as a warning.
+- Set `clear_stale_cooldowns: false` to turn it off.
 
-## Quota file
+## Console
+
+The read-only status page is served at:
+
+```
+http://<host>:<port>/v0/resource/plugins/expiring-first/status
+```
+
+It needs no management key and shows:
+
+- Whether the scheduler is active, the version, the configured probe interval, the last probe time, and the Live Voice pool.
+- The current **pins** table: provider, model, redacted auth, pin time, last pick time and availability.
+- **Per-account windows**: provider, redacted auth, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
+- **The next pick per provider** for a representative model, and whether the weekly-soonest ranking or the sticky/built-in path would decide it.
+- **Pick counts** per provider (handled, and how many the weekly-soonest ranking decided), so it is obvious this plugin is the active scheduler.
+
+The page has no configuration editing: configuration stays in CLIProxyAPI's plugin config fields.
+
+The management routes below are protected by the management key:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/v0/management/plugins/expiring-first/pins` | Current pins. |
+| `GET` | `/v0/management/plugins/expiring-first/quota` | The readings the ranking uses, with auth IDs redacted. |
+| `POST` | `/v0/management/plugins/expiring-first/refresh` | Run one probe cycle now. |
+
+```bash
+curl -s -H "Authorization: Bearer $MANAGEMENT_KEY" \
+  http://127.0.0.1:8317/v0/management/plugins/expiring-first/quota
+```
+
+```json
+[{"auth_id":"anti***on","auth":"anti***on","provider":"antigravity","antigravity_group":"gemini","updated_at":"2026-10-09T19:30:02Z","probe_age":"12s ago","windows":[{"name":"weekly","window_minutes":10080,"used_percent":41,"remaining_percent":59,"resets_at":"2026-10-16T18:00:00Z","reset_in":"6d 22h left","models":["gemini"],"exhausted":false}]}]
+```
+
+Credential IDs are redacted in the page and in every JSON route. Full IDs stay in the plugin logs, as before.
+
+## Quota file (optional)
+
+The probes are the primary source. A quota file can still override an individual account: a file reading **younger than `max_age`** wins over the probe reading for the same `auth_id`. An empty, missing or unreadable file leaves the probe readings in use.
 
 A JSON document, schema `expiring-first.quota.v1`. Any program can write it; the plugin only reads it.
 
@@ -108,60 +197,55 @@ plugins:
   configs:
     expiring-first:
       enabled: true
-      priority: 1
+      priority: 110   # higher than cpa-live-voice (100): this plugin handles Live too
       # Provider keys to route. Omit or leave empty to apply to every provider.
-      providers: [claude, codex]
-      # Absolute path of the quota file. Omit to route stickily only.
+      providers: [antigravity, claude, codex, xai]
+      # How often the in-process probes refresh every credential's readings (at least 1m).
+      probe_interval: 5m
+      # Optional absolute path of a quota file that overrides individual accounts.
       quota_file: /home/me/.local/state/usage/quota.json
       # How old an account's reading may be before it is ignored (Go duration, at least 1m).
       max_age: 30m
       # Quota left untouched on every window, in percent (0 to below 100).
       reserve_percent: 0
-      # Clear quota cooldowns that newer quota readings show to be over (CLIProxyAPI 8.0.12+).
+      # Clear quota cooldowns that newer quota readings show to be over.
       clear_stale_cooldowns: true
       # Sticky fallback: how long the pinned account must stay unavailable before the pin moves.
       switch_after: 5m
       # Optional absolute path that keeps pins across restarts. Omit to keep pins in memory only.
       pins_file: /home/me/cliproxyapi/expiring-first-pins.json
+      # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
+      live_auth_ids: [codex-live-account.json]
+      # Reject a Live request when no live_auth_ids credential is available (default true).
+      fail_closed: true
 ```
 
 `priority` under the plugin orders scheduler plugins: CLIProxyAPI consults only the highest-priority one, so run one routing plugin at a time.
 
 With `pins_file`, the plugin writes the file (mode `0600`, replaced atomically) whenever a pin is created or moves, and restores it on load. It holds provider, model, auth ID and pin time only. Pair it with CLIProxyAPI's `save-cooldown-status: true`, so cooldowns also survive restarts.
 
-## Inspecting pins
-
-```bash
-curl -s -H "Authorization: Bearer $MANAGEMENT_KEY" http://127.0.0.1:8317/v0/management/plugins/expiring-first/pins
-```
-
-```json
-{"pins":[{"provider":"claude","model":"claude-opus-5-5","auth_id":"claude-1234-user@example.com.json","pinned_at":"2026-10-09T19:14:40Z","last_picked_at":"2026-10-09T19:30:02Z","missing_since":null}]}
-```
-
-The route is read-only and protected by the management key. Each pin is the account currently serving that route; `missing_since` is set while that account is unavailable.
-
 ## Scope and caveats
 
 - For the providers it handles, the plugin takes precedence over `routing.strategy` and `routing.session-affinity`.
 - It leaves a request to the configured strategy when the route spans several providers, when it is a Codex pool with a websocket-enabled credential (plugins cannot see whether the client uses a websocket), or when the provider is not in `providers`.
-- Quota readings are only as fresh as the program writing the file. Running out is still noticed at once, through CLIProxyAPI's cooldown after a 429; a limit reset spent on an account is noticed at the next reading.
+- Readings are only as fresh as the last probe cycle (`probe_interval`). Running out is still noticed at once, through CLIProxyAPI's cooldown after a 429; a limit reset spent on an account is noticed at the next cycle.
 - After a limit reset, CLIProxyAPI would keep skipping the account until its original cooldown ends. The plugin clears such cooldowns itself; see [Stale cooldowns](#stale-cooldowns).
-- It logs no credential data other than auth IDs and makes no network requests.
+- The console page and the JSON routes redact credential IDs. Plugin logs carry auth IDs, as before, and no tokens.
 - Cooldowns on a single model are not visible to plugins, so only credential-wide quota cooldowns are cleared.
 
 ## Install
 
-From the [CLIProxyAPI plugin store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), or manually: download the zip for your platform from the [latest release](https://github.com/magoz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI. Remove other scheduler plugins for the same providers.
+From the [CLIProxyAPI plugin store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), or manually: download the zip for your platform from the [latest release](https://github.com/karlorz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI. Remove other scheduler plugins for the same providers.
 
 ## Development
 
 ```bash
+gofmt -w .
 go test -race ./...
 go build -buildmode=c-shared -o expiring-first.so .
 ```
 
-Routing logic lives in `internal/router` and has no cgo. `main.go` is the C ABI glue. Releases are built by `.github/workflows/build.yml` when a `v<version>` tag is pushed.
+Routing logic lives in `internal/router` and has no cgo. The probes live in `internal/probe`, the Live Voice selector in `internal/live`, and the console in `internal/console`; none of them use cgo. `main.go` is the C ABI glue that also wires the host callbacks. Releases are built by `.github/workflows/build.yml` when a `v<version>` tag is pushed. See [dist/BUILD.md](dist/BUILD.md) for the local c-shared build notes.
 
 ## License
 

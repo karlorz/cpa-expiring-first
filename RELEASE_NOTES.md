@@ -1,3 +1,12 @@
+## v0.3.0 (karlorz fork v1)
+
+- **In-process quota probes.** The plugin now reads Antigravity, Claude, Codex and xAI quota itself, on a background `probe_interval` (default `5m`), through the host's HTTP transport. Picks read the in-memory snapshot and never call a provider. Antigravity is probed once per model group (`gemini` and `claude_gpt`); Claude, Codex and xAI have a single metered pool each.
+- **Quota file is now optional.** A file reading younger than `max_age` still wins over the probe reading for the same account; an empty or missing file leaves the probe readings in use.
+- **Live Voice passthrough.** Codex Live/Realtime traffic is decided by a `live_auth_ids` allowlist, ahead of the weekly-soonest ranking, with `fill-first` or `round-robin` and optional `fail_closed`. With no allowlist, Live requests are left to the host's built-in scheduler. This replaces running `cpa-live-voice` alongside this plugin: give `expiring-first` priority `110` and `cpa-live-voice` priority `100`, and this plugin serves both paths.
+- **Console page** at `/v0/resource/plugins/expiring-first/status`: pins, per-account windows (provider, redacted auth, 5-hour and weekly remaining/reset, Antigravity model group, probe age and error), the next pick per provider, and the picks this plugin served. New read-only management routes `GET .../quota` and `POST .../refresh`.
+- Credential IDs are redacted on the page and in the JSON routes.
+- Requires CLIProxyAPI 8.0.12 or newer.
+
 ## v0.2.0
 
 - **Clears stale cooldowns.** When a quota reading taken after an account's quota cooldown began shows quota left (for example after a limit reset was spent), the plugin clears the cooldown through `host.routing.reset_cooldown`, so the account is usable at once instead of at the original reset time. Only cooldowns longer than 30 minutes are considered; checked at most once a minute. Needs CLIProxyAPI 8.0.12 or newer; on older hosts the call fails with a logged warning. Turn off with `clear_stale_cooldowns: false`.

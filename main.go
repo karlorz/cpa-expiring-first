@@ -58,15 +58,21 @@ static void free_host_buffer(void* ptr, size_t len) {
 import "C"
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
-	"github.com/magoz/cpa-expiring-first/internal/router"
+	"github.com/karlorz/cpa-expiring-first/internal/console"
+	"github.com/karlorz/cpa-expiring-first/internal/live"
+	"github.com/karlorz/cpa-expiring-first/internal/probe"
+	"github.com/karlorz/cpa-expiring-first/internal/probe/host"
+	"github.com/karlorz/cpa-expiring-first/internal/router"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -74,7 +80,7 @@ import (
 // version is set at release build time with -ldflags "-X main.version=<version>".
 var version = "dev"
 
-const repository = "https://github.com/magoz/cpa-expiring-first"
+const repository = "https://github.com/karlorz/cpa-expiring-first"
 
 // hostStateTTL bounds how stale a host auth listing may be. A burst of picks while the pinned
 // credential is absent shares one host.auth.list call.
@@ -83,7 +89,23 @@ const hostStateTTL = 2 * time.Second
 // quotaCheckTTL bounds how often picks check the quota file for changes.
 const quotaCheckTTL = 2 * time.Second
 
+// shutdownGrace bounds how long shutdown waits for the probe loop to finish its cycle.
+const shutdownGrace = 5 * time.Second
+
+// memoryQuota holds the probe readings; the scheduler ranks on these unless a quota file
+// overrides an individual account.
+var memoryQuota = router.NewMemoryQuota()
+
 var scheduler = router.NewScheduler(router.DefaultConfig(), router.NewCachedInspector(listHostAuthStates, hostStateTTL))
+
+// probeWorker refreshes the in-process readings on the configured interval.
+var probeWorker = probe.NewWorker(memoryQuota)
+
+// liveSelector handles Codex Live requests from this plugin's own allowlist.
+var liveSelector = live.NewSelector()
+
+// consoleHandler serves the read-only status page and the quota and pins routes.
+var consoleHandler = console.NewHandler(consoleSources{})
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -115,35 +137,18 @@ type capabilities struct {
 	ManagementAPI bool `json:"management_api"`
 }
 
-// pinsPath is served by the host as /v0/management/plugins/expiring-first/pins.
-const pinsPath = "/plugins/expiring-first/pins"
-
 type managementRegistration struct {
-	Routes []managementRoute `json:"routes"`
-}
-
-type managementRoute struct {
-	Method      string
-	Path        string
-	Description string
+	Routes    []pluginapi.ManagementRoute `json:"routes,omitempty"`
+	Resources []pluginapi.ResourceRoute   `json:"resources,omitempty"`
 }
 
 type managementRequest struct {
-	Method string
-	Path   string
-}
-
-type pinsResponse struct {
-	Pins []pinView `json:"pins"`
-}
-
-type pinView struct {
-	Provider     string     `json:"provider"`
-	Model        string     `json:"model"`
-	AuthID       string     `json:"auth_id"`
-	PinnedAt     time.Time  `json:"pinned_at"`
-	LastPickedAt time.Time  `json:"last_picked_at"`
-	MissingSince *time.Time `json:"missing_since"`
+	Method  string              `json:"Method"`
+	Path    string              `json:"Path"`
+	Query   map[string][]string `json:"Query"`
+	Headers http.Header         `json:"Headers"`
+	// Body arrives base64-encoded, because the host marshals the request body as a byte slice.
+	Body []byte `json:"Body"`
 }
 
 type hostLogRequest struct {
@@ -198,7 +203,13 @@ func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() {
+	// Stop the probe loop before the host unloads the library, so no cycle calls back into a
+	// host that is going away.
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	probeWorker.Stop(ctx)
+}
 
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
@@ -210,11 +221,10 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodSchedulerPick:
 		return pick(request)
 	case pluginabi.MethodManagementRegister:
-		return okEnvelope(managementRegistration{Routes: []managementRoute{{
-			Method:      http.MethodGet,
-			Path:        pinsPath,
-			Description: "Current pins: the credential each provider and model route is routed to.",
-		}}})
+		return okEnvelope(managementRegistration{
+			Routes:    console.Routes(),
+			Resources: console.Resources(),
+		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
 	default:
@@ -236,31 +246,48 @@ func configure(raw []byte) error {
 	scheduler.Configure(cfg)
 	attachPinsFile(cfg.PinsFile())
 	attachQuotaFile(cfg.QuotaFile())
+	attachLive(cfg)
+	probeWorker.SetInterval(cfg.ProbeInterval())
+	probeWorker.Start(hostCallbacks{})
 	return nil
+}
+
+// attachLive copies this plugin's own Live Voice settings into the selector.
+func attachLive(cfg router.Config) {
+	liveSelector.Configure(live.Config{
+		AuthIDs:    cfg.LiveAuthIDs(),
+		Strategy:   live.DefaultStrategy,
+		FailClosed: cfg.FailClosed(),
+	})
 }
 
 var (
 	quotaFileMu sync.Mutex
 	// quotaFilePath is the quota file currently attached to the scheduler; "" when none.
 	quotaFilePath string
+	// quotaAttached records that the overlay has been given to the scheduler at least once, so
+	// the default empty path still attaches it on the first configure.
+	quotaAttached bool
 )
 
-// attachQuotaFile makes the scheduler rank by the quota file at path, or route stickily only
-// when path is empty. Reattaching the same path keeps the cached readings.
+// attachQuotaFile makes the file overlay use path, or keeps the probe readings alone when path
+// is empty. Reattaching the same path keeps the cached readings.
 func attachQuotaFile(path string) {
 	quotaFileMu.Lock()
 	defer quotaFileMu.Unlock()
-	if path == quotaFilePath {
+	if quotaAttached && path == quotaFilePath {
 		return
 	}
 	quotaFilePath = path
-	if path == "" {
-		scheduler.UseQuota(nil)
-		return
+	quotaAttached = true
+	var file router.QuotaSource
+	if path != "" {
+		file = router.NewQuotaFile(path, quotaCheckTTL, func(err error) {
+			logWarn(fmt.Sprintf("expiring-first: quota file: %v", err))
+		})
 	}
-	scheduler.UseQuota(router.NewQuotaFile(path, quotaCheckTTL, func(err error) {
-		logWarn(fmt.Sprintf("expiring-first: quota file: %v", err))
-	}))
+	quotaOverlay := router.NewOverlayQuota(memoryQuota, file, router.DefaultMaxAge)
+	scheduler.UseQuota(quotaOverlay)
 }
 
 var (
@@ -308,6 +335,14 @@ func pick(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode scheduler request: %w", errUnmarshal)
 	}
 	now := time.Now()
+	// Live Voice first. A Live request is never answered by the weekly-soonest ranking: with no
+	// configured live_auth_ids it stays unhandled, so the host's built-in scheduler decides.
+	if live.IsLiveRequest(req) {
+		if resp, handled := liveSelector.Pick(req); handled {
+			return okEnvelope(resp)
+		}
+		return okEnvelope(pluginapi.SchedulerPickResponse{})
+	}
 	resp, moved := scheduler.Pick(req, now)
 	if moved != nil {
 		logSwitch(*moved)
@@ -389,38 +424,22 @@ func handleManagement(raw []byte) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode management request: %w", errUnmarshal)
 	}
-	if req.Method != http.MethodGet {
-		return okEnvelope(jsonResponse(http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"}))
+	request := pluginapi.ManagementRequest{
+		Method:  req.Method,
+		Path:    req.Path,
+		Headers: req.Headers,
+		Query:   req.Query,
+		Body:    req.Body,
 	}
-	pins := scheduler.Pins()
-	views := make([]pinView, 0, len(pins))
-	for _, p := range pins {
-		view := pinView{
-			Provider:     p.Provider,
-			Model:        p.Model,
-			AuthID:       p.AuthID,
-			PinnedAt:     p.PinnedAt.UTC(),
-			LastPickedAt: p.LastPickedAt.UTC(),
-		}
-		if !p.MissingSince.IsZero() {
-			missingSince := p.MissingSince.UTC()
-			view.MissingSince = &missingSince
-		}
-		views = append(views, view)
+	resp, errHandle := consoleHandler.Handle(context.Background(), request)
+	if errHandle != nil {
+		return nil, errHandle
 	}
-	return okEnvelope(jsonResponse(http.StatusOK, pinsResponse{Pins: views}))
-}
-
-func jsonResponse(status int, body any) pluginapi.ManagementResponse {
-	raw, errMarshal := json.Marshal(body)
-	if errMarshal != nil {
-		status, raw = http.StatusInternalServerError, []byte(`{"error":"encode response"}`)
-	}
-	return pluginapi.ManagementResponse{
-		StatusCode: status,
-		Headers:    http.Header{"Content-Type": []string{"application/json"}},
-		Body:       raw,
-	}
+	return okEnvelope(pluginapi.ManagementResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Headers,
+		Body:       resp.Body,
+	})
 }
 
 func logSwitch(moved router.Switch) {
@@ -524,7 +543,7 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             "Expiring First",
 			Version:          version,
-			Author:           "magoz",
+			Author:           "karlorz",
 			GitHubRepository: repository,
 			ConfigFields: []pluginapi.ConfigField{
 				{
@@ -562,6 +581,21 @@ func pluginRegistration() registration {
 					Type:        pluginapi.ConfigFieldTypeString,
 					Description: "Absolute path of a JSON file that keeps pins across restarts. Empty keeps pins in memory only.",
 				},
+				{
+					Name:        "probe_interval",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "How often the in-process quota probes refresh every credential's readings (Go duration, default 5m).",
+				},
+				{
+					Name:        "live_auth_ids",
+					Type:        pluginapi.ConfigFieldTypeArray,
+					Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Empty leaves Live requests to the host's built-in scheduler.",
+				},
+				{
+					Name:        "fail_closed",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "Reject a Live request when no configured live_auth_ids credential is available, instead of delegating to the built-in scheduler (default true).",
+				},
 			},
 		},
 		Capabilities: capabilities{
@@ -596,3 +630,136 @@ func writeResponse(response *C.cliproxy_buffer, raw []byte) {
 	response.ptr = ptr
 	response.len = C.size_t(len(raw))
 }
+
+// hostCallbacks adapts the C host API to the probe package's callback interface. It performs
+// only reads: list credentials, read one credential, and issue an upstream HTTP request.
+type hostCallbacks struct{}
+
+func (hostCallbacks) ListAuthFiles(ctx context.Context) ([]host.AuthFile, error) {
+	raw, errCall := callHost(pluginabi.MethodHostAuthList, []byte("{}"))
+	if errCall != nil {
+		return nil, errCall
+	}
+	result, errDecode := decodeHostResult(raw)
+	if errDecode != nil {
+		return nil, errDecode
+	}
+	var list struct {
+		Files []host.AuthFile `json:"files"`
+	}
+	if errUnmarshal := json.Unmarshal(result, &list); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode host.auth.list result: %w", errUnmarshal)
+	}
+	return list.Files, nil
+}
+
+func (hostCallbacks) GetAuth(ctx context.Context, authIndex string) (host.AuthDocument, error) {
+	payload, errMarshal := json.Marshal(pluginapi.HostAuthGetRequest{AuthIndex: authIndex})
+	if errMarshal != nil {
+		return host.AuthDocument{}, errMarshal
+	}
+	raw, errCall := callHost(pluginabi.MethodHostAuthGet, payload)
+	if errCall != nil {
+		return host.AuthDocument{}, errCall
+	}
+	result, errDecode := decodeHostResult(raw)
+	if errDecode != nil {
+		return host.AuthDocument{}, errDecode
+	}
+	var document host.AuthDocument
+	if errUnmarshal := json.Unmarshal(result, &document); errUnmarshal != nil {
+		return host.AuthDocument{}, fmt.Errorf("decode host.auth.get result: %w", errUnmarshal)
+	}
+	return document, nil
+}
+
+func (hostCallbacks) HTTPDo(ctx context.Context, request host.HTTPRequest) (host.HTTPResponse, error) {
+	payload, errMarshal := json.Marshal(request)
+	if errMarshal != nil {
+		return host.HTTPResponse{}, errMarshal
+	}
+	raw, errCall := callHost(pluginabi.MethodHostHTTPDo, payload)
+	if errCall != nil {
+		return host.HTTPResponse{}, errCall
+	}
+	result, errDecode := decodeHostResult(raw)
+	if errDecode != nil {
+		return host.HTTPResponse{}, errDecode
+	}
+	var response host.HTTPResponse
+	if errUnmarshal := json.Unmarshal(result, &response); errUnmarshal != nil {
+		return host.HTTPResponse{}, fmt.Errorf("decode host.http.do result: %w", errUnmarshal)
+	}
+	return response, nil
+}
+
+// decodeHostResult unwraps a host callback envelope and returns its result payload.
+func decodeHostResult(raw []byte) (json.RawMessage, error) {
+	var resp envelope
+	if errUnmarshal := json.Unmarshal(raw, &resp); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode host envelope: %w", errUnmarshal)
+	}
+	if !resp.OK {
+		if resp.Error != nil {
+			return nil, fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return nil, errors.New("host callback failed")
+	}
+	return resp.Result, nil
+}
+
+// consoleSources adapts the scheduler, the probe worker and the host callbacks to the console
+// package's read-only view. It never writes configuration and never calls a provider on its own.
+type consoleSources struct{}
+
+func (consoleSources) Pins() []router.PinView { return scheduler.Pins() }
+
+func (consoleSources) Quota() router.Quota { return scheduler.QuotaSnapshot() }
+
+func (consoleSources) Accounts() []probe.Account { return probeWorker.Snapshot().Accounts }
+
+func (consoleSources) PickStats() map[string]router.PickStat { return scheduler.PickStats() }
+
+// Candidates lists the credentials the host offers, grouped by the provider key a pick would
+// route on. One listing serves every provider the page previews.
+func (consoleSources) Candidates(ctx context.Context) (map[string][]pluginapi.SchedulerAuthCandidate, error) {
+	files, errList := (hostCallbacks{}).ListAuthFiles(ctx)
+	if errList != nil {
+		return nil, errList
+	}
+	byProvider := make(map[string][]pluginapi.SchedulerAuthCandidate)
+	for _, file := range files {
+		provider := strings.ToLower(strings.TrimSpace(file.Provider))
+		if provider == "" {
+			provider = strings.ToLower(strings.TrimSpace(file.Type))
+		}
+		if provider == "" {
+			continue
+		}
+		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{ID: file.ID, Provider: provider})
+	}
+	return byProvider, nil
+}
+
+func (consoleSources) Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, now time.Time) (string, bool) {
+	return scheduler.Preview(candidates, provider, model, now)
+}
+
+func (consoleSources) Config() router.Config { return scheduler.Configuration() }
+
+func (consoleSources) Live() live.Config { return liveSelector.Config() }
+
+func (consoleSources) Refresh(ctx context.Context) error {
+	probeWorker.Refresh(ctx, hostCallbacks{})
+	return nil
+}
+
+// Enabled reports that the plugin is registered and routing; the provider scope is shown
+// separately on the page.
+func (consoleSources) Enabled() bool { return true }
+
+func (consoleSources) Version() string { return version }
+
+func (consoleSources) ProbeInterval() time.Duration { return scheduler.Configuration().ProbeInterval() }
+
+func (consoleSources) LastProbeAt() time.Time { return probeWorker.Snapshot().At }

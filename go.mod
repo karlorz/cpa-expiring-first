@@ -1,4 +1,4 @@
-module github.com/magoz/cpa-expiring-first
+module github.com/karlorz/cpa-expiring-first
 
 go 1.26.0
 

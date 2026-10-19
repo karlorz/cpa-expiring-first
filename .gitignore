@@ -1,4 +1,6 @@
-/dist/
+# Build artifacts stay out of the repository, but the build notes do not.
+/dist/*
+!/dist/BUILD.md
 *.so
 *.dylib
 *.dll

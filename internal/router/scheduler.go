@@ -108,6 +108,10 @@ type Scheduler struct {
 	cooldownMu   sync.Mutex
 	cooldownSeen map[cooldownKey]time.Time
 
+	// statsMu guards the per-provider pick counters shown on the console page.
+	statsMu sync.Mutex
+	stats   map[string]PickStat
+
 	// saveMu serializes saves. Each save snapshots the pins while holding it, so the last
 	// write always carries the newest state. Lock order: saveMu, then mu.
 	saveMu sync.Mutex
@@ -125,6 +129,13 @@ func (s *Scheduler) Configure(cfg Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg = cfg
+}
+
+// Configuration returns the active configuration.
+func (s *Scheduler) Configuration() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
 }
 
 // UseQuota sets where quota readings come from; nil routes stickily only.
@@ -213,10 +224,19 @@ func (s *Scheduler) pick(req pluginapi.SchedulerPickRequest, now time.Time) (res
 	cfg, source := s.cfg, s.quota
 	s.mu.Unlock()
 
+	// Count handled picks per provider so the console page can show this plugin serving them.
+	ranked := false
+	defer func() {
+		if resp.Handled {
+			s.recordPick(provider, ranked)
+		}
+	}()
+
 	// Read quota outside the lock: the source may touch the file system.
 	if source != nil {
 		if quota := source.Load(); quota != nil {
 			if choice, ok := rankByQuota(req.Candidates, quota, key.model, now, cfg.MaxAge(), cfg.ReservePercent()); ok {
+				ranked = true
 				return s.followQuota(key, choice, now)
 			}
 		}
@@ -351,6 +371,72 @@ func (s *Scheduler) Pins() []PinView {
 // the grace period, so a cooldown the grace period would wait out never moves the pin early.
 func lockoutThreshold(switchAfter time.Duration) time.Duration {
 	return max(QuotaCooldownFloor, switchAfter)
+}
+
+// Preview returns the credential the ranking would pick for a model without changing any pin.
+// It is used by the console page to show the next pick per provider. ok is false when no
+// candidate has a usable fresh reading, which means the next pick follows the sticky pin or the
+// host's built-in order instead.
+func (s *Scheduler) Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, now time.Time) (string, bool) {
+	s.mu.Lock()
+	cfg, source := s.cfg, s.quota
+	s.mu.Unlock()
+	if source == nil || !cfg.Applies(provider) || len(candidates) == 0 {
+		return "", false
+	}
+	quota := source.Load()
+	if quota == nil {
+		return "", false
+	}
+	choice, okChoice := rankByQuota(candidates, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
+	if !okChoice {
+		return "", false
+	}
+	return choice.authID, true
+}
+
+// QuotaSnapshot returns the readings currently in use, keyed by auth ID. It is used by the
+// console page; picks never call it.
+func (s *Scheduler) QuotaSnapshot() Quota {
+	s.mu.Lock()
+	source := s.quota
+	s.mu.Unlock()
+	if source == nil {
+		return nil
+	}
+	return source.Load()
+}
+
+// PickStat counts the picks served for one provider, and how many of them the weekly-soonest
+// ranking decided, so the console page can show that this plugin is the active scheduler.
+type PickStat struct {
+	Handled int64
+	Ranked  int64
+}
+
+// PickStats returns the pick counters per provider.
+func (s *Scheduler) PickStats() map[string]PickStat {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	stats := make(map[string]PickStat, len(s.stats))
+	for provider, stat := range s.stats {
+		stats[provider] = stat
+	}
+	return stats
+}
+
+func (s *Scheduler) recordPick(provider string, ranked bool) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if s.stats == nil {
+		s.stats = make(map[string]PickStat)
+	}
+	stat := s.stats[provider]
+	stat.Handled++
+	if ranked {
+		stat.Ranked++
+	}
+	s.stats[provider] = stat
 }
 
 // routeProvider returns the single provider a request routes to. The host leaves Provider
