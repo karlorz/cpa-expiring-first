@@ -105,9 +105,8 @@ func (w *Worker) SetInterval(interval time.Duration) {
 	w.mu.Unlock()
 }
 
-// Start launches the background loop if it is not running. The first cycle starts after one
-// interval, so plugin registration never calls back into the host on its own stack. Each wait
-// re-reads the interval, so a reconfigure takes effect without restarting the loop.
+// Start launches the background loop with an immediate first probe cycle. Each wait re-reads
+// the interval, so a reconfigure takes effect without restarting the loop.
 func (w *Worker) Start(callbacks host.Callbacks) {
 	w.mu.Lock()
 	if w.cancel != nil {

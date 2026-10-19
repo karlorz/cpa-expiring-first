@@ -8,18 +8,6 @@ import (
 	"github.com/karlorz/cpa-expiring-first/internal/probe/reading"
 )
 
-func strconvFormatInt(value int64) string {
-	return strconv.FormatInt(value, 10)
-}
-
-func strconvFormatFloat(value float64) string {
-	return strconv.FormatFloat(value, 'f', -1, 64)
-}
-
-func parseTierNumber(text string) (int64, error) {
-	return strconv.ParseInt(text, 10, 64)
-}
-
 // safeError truncates and redacts a probe error, so credentials never reach logs or the console.
 func safeError(message string) string {
 	trimmed := strings.TrimSpace(message)
@@ -116,13 +104,13 @@ func anyToTierString(value any) string {
 		return strings.TrimSpace(typed.String())
 	case float64:
 		if typed == float64(int64(typed)) {
-			return strconvFormatInt(int64(typed))
+			return strconv.FormatInt(int64(typed), 10)
 		}
-		return strconvFormatFloat(typed)
+		return strconv.FormatFloat(typed, 'f', -1, 64)
 	case int:
-		return strconvFormatInt(int64(typed))
+		return strconv.FormatInt(int64(typed), 10)
 	case int64:
-		return strconvFormatInt(typed)
+		return strconv.FormatInt(typed, 10)
 	default:
 		return ""
 	}
@@ -133,7 +121,7 @@ func classifyTierToken(tier string) (PlanClass, bool) {
 	if text == "" {
 		return "", false
 	}
-	if number, errParse := parseTierNumber(text); errParse == nil {
+	if number, errParse := strconv.ParseInt(text, 10, 64); errParse == nil {
 		switch {
 		case number >= 1:
 			return PlanClassPaid, true

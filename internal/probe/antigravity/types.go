@@ -71,21 +71,11 @@ type ProbeRequest struct {
 // WindowsForGroup converts a probe result into router windows for the model group it belongs
 // to. A failed probe yields nothing.
 func WindowsForGroup(result ProbeResult) []reading.Window {
-	if result.Status != reading.StatusReady || len(result.Windows) == 0 {
-		return nil
-	}
 	models := reading.ModelsGemini
 	if result.ModelGroup == ModelGroupClaudeGPT {
 		models = reading.ModelsClaudeGPT
 	}
-	windows := make([]reading.Window, 0, len(result.Windows))
-	for _, quota := range result.Windows {
-		if quota.Duration <= 0 {
-			continue
-		}
-		windows = append(windows, reading.WindowFrom(quota, models))
-	}
-	return windows
+	return reading.WindowsFrom(result.Status, result.Windows, models)
 }
 
 type clock interface {

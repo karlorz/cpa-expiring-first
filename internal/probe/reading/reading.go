@@ -76,3 +76,17 @@ func WindowFrom(quota QuotaWindow, models []string) Window {
 		Models:      models,
 	}
 }
+
+// WindowsFrom converts usable provider windows with the given model scope.
+func WindowsFrom(status Status, quotas []QuotaWindow, models []string) []Window {
+	if status != StatusReady || len(quotas) == 0 {
+		return nil
+	}
+	windows := make([]Window, 0, len(quotas))
+	for _, quota := range quotas {
+		if quota.Duration > 0 {
+			windows = append(windows, WindowFrom(quota, models))
+		}
+	}
+	return windows
+}

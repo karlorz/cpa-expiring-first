@@ -3,7 +3,6 @@ package codex
 import (
 	"bytes"
 	"encoding/json"
-	"math"
 	"strings"
 	"time"
 
@@ -110,34 +109,24 @@ func windowRemaining(window whamWindow) (int64, bool) {
 		return 0, true
 	}
 	if usedPercent, okPercent := wire.ToFloat64(window.UsedPercent); okPercent {
-		return clampPercent(100 - usedPercent), true
+		return wire.ClampPercent(100 - usedPercent), true
 	}
 	limit, okLimit := wire.ToFloat64(window.Limit)
 	remaining, okRemaining := wire.ToFloat64(window.Remaining)
 	if okRemaining {
 		if okLimit && limit > 0 {
-			return clampPercent((remaining / limit) * 100), true
+			return wire.ClampPercent((remaining / limit) * 100), true
 		}
 		if remaining <= 1.0 && remaining >= 0 {
-			return clampPercent(remaining * 100), true
+			return wire.ClampPercent(remaining * 100), true
 		}
-		return clampPercent(remaining), true
+		return wire.ClampPercent(remaining), true
 	}
 	used, okUsed := wire.ToFloat64(window.Used)
 	if okLimit && okUsed && limit > 0 {
-		return clampPercent(((limit - used) / limit) * 100), true
+		return wire.ClampPercent(((limit - used) / limit) * 100), true
 	}
 	return 0, false
-}
-
-func clampPercent(value float64) int64 {
-	if value <= 0 {
-		return 0
-	}
-	if value > 100 {
-		return 100
-	}
-	return int64(math.Ceil(value))
 }
 
 func windowMetadataStrings(window whamWindow) []string {

@@ -214,7 +214,6 @@ func (s *Scheduler) pick(req pluginapi.SchedulerPickRequest, now time.Time) (res
 	}
 
 	key := routeKey{provider: provider, model: baseModel(req.Model)}
-	fallback := fillFirst(req.Candidates)
 
 	s.mu.Lock()
 	if !s.cfg.Applies(provider) {
@@ -241,6 +240,8 @@ func (s *Scheduler) pick(req pluginapi.SchedulerPickRequest, now time.Time) (res
 			}
 		}
 	}
+
+	fallback := fillFirst(req.Candidates)
 
 	s.mu.Lock()
 	current, pinned := s.pins[key]

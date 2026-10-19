@@ -554,7 +554,7 @@ func pluginRegistration() registration {
 				{
 					Name:        "quota_file",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Absolute path of the quota file (schema expiring-first.quota.v1). Empty routes stickily only.",
+					Description: "Optional quota file overlay (schema expiring-first.quota.v1). Empty uses in-process probes.",
 				},
 				{
 					Name:        "max_age",

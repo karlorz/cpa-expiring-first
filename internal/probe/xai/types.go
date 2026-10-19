@@ -56,17 +56,7 @@ type ProbeRequest struct {
 
 // Windows converts a probe result into router windows. The xAI reading applies to every model.
 func Windows(result ProbeResult) []reading.Window {
-	if result.Status != reading.StatusReady || len(result.Windows) == 0 {
-		return nil
-	}
-	windows := make([]reading.Window, 0, len(result.Windows))
-	for _, quota := range result.Windows {
-		if quota.Duration <= 0 {
-			continue
-		}
-		windows = append(windows, reading.WindowFrom(quota, nil))
-	}
-	return windows
+	return reading.WindowsFrom(result.Status, result.Windows, nil)
 }
 
 type clock interface {

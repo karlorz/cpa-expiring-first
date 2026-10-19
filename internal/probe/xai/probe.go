@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -273,53 +272,4 @@ func looksLikeAuthFailureText(msg string) bool {
 		return true
 	}
 	return false
-}
-
-// AccessTokenExpired reports whether an access token's exp claim has passed. A token whose exp
-// cannot be read is not assumed expired.
-func AccessTokenExpired(accessToken string, now time.Time) bool {
-	exp, okExp := jwtExpClaim(accessToken)
-	if !okExp {
-		return false
-	}
-	return !exp.After(now.UTC())
-}
-
-func jwtExpClaim(accessToken string) (time.Time, bool) {
-	parts := strings.Split(strings.TrimSpace(accessToken), ".")
-	if len(parts) < 2 {
-		return time.Time{}, false
-	}
-	payload, errDecode := base64.RawURLEncoding.DecodeString(parts[1])
-	if errDecode != nil {
-		payload, errDecode = base64.StdEncoding.DecodeString(parts[1])
-		if errDecode != nil {
-			return time.Time{}, false
-		}
-	}
-	var claims map[string]any
-	if errUnmarshal := json.Unmarshal(payload, &claims); errUnmarshal != nil {
-		return time.Time{}, false
-	}
-	switch value := claims["exp"].(type) {
-	case float64:
-		if value <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(int64(value), 0).UTC(), true
-	case json.Number:
-		seconds, errParse := value.Int64()
-		if errParse != nil || seconds <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(seconds, 0).UTC(), true
-	case string:
-		seconds, errParse := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-		if errParse != nil || seconds <= 0 {
-			return time.Time{}, false
-		}
-		return time.Unix(seconds, 0).UTC(), true
-	default:
-		return time.Time{}, false
-	}
 }
