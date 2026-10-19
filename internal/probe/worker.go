@@ -121,6 +121,9 @@ func (w *Worker) Start(callbacks host.Callbacks) {
 
 	go func() {
 		defer close(done)
+		// First cycle runs off the register stack immediately so weekly-soonest is available
+		// without waiting a full probe_interval; later cycles keep the configured cadence.
+		w.Refresh(ctx, callbacks)
 		timer := time.NewTimer(w.currentInterval())
 		defer timer.Stop()
 		for {
@@ -297,7 +300,6 @@ func probeAntigravityCredential(ctx context.Context, client *host.Client, item c
 		AuthID:     item.id,
 		AuthIndex:  item.authIndex,
 		Provider:   item.provider,
-		Group:      antigravity.ModelGroupGemini,
 		ObservedAt: now,
 	}
 	for _, group := range []antigravity.ModelGroup{antigravity.ModelGroupGemini, antigravity.ModelGroupClaudeGPT} {

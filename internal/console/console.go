@@ -39,12 +39,20 @@ const (
 	ResourceURL = "/v0/resource/plugins/expiring-first/status"
 )
 
-// RepresentativeModels maps a provider to the model the page uses to preview the next pick.
-var RepresentativeModels = map[string]string{
-	"antigravity": "gemini-3-pro",
-	"claude":      "claude-sonnet-5",
-	"codex":       "gpt-5-codex",
-	"xai":         "grok-4",
+// RepresentativePick is one next-pick preview row on the console.
+type RepresentativePick struct {
+	Provider string
+	Model    string
+}
+
+// RepresentativePicks is the set of provider+model pairs the page uses to preview the next pick.
+// Antigravity has two rows because gemini and claude_gpt are metered separately.
+var RepresentativePicks = []RepresentativePick{
+	{Provider: "antigravity", Model: "gemini-3-pro"},
+	{Provider: "antigravity", Model: "claude-sonnet-5"},
+	{Provider: "claude", Model: "claude-sonnet-5"},
+	{Provider: "codex", Model: "gpt-5-codex"},
+	{Provider: "xai", Model: "grok-4"},
 }
 
 // Sources is the read-only view the console renders. main.go implements it over the scheduler,
@@ -324,11 +332,6 @@ func windowName(minutes float64) string {
 
 func (h *Handler) nextPicks(ctx context.Context) []NextPickView {
 	now := h.now().UTC()
-	providers := make([]string, 0, len(RepresentativeModels))
-	for provider := range RepresentativeModels {
-		providers = append(providers, provider)
-	}
-	sort.Strings(providers)
 
 	// One host listing serves every provider; a failed listing leaves the picks unknown rather
 	// than failing the page.
@@ -337,11 +340,10 @@ func (h *Handler) nextPicks(ctx context.Context) []NextPickView {
 		byProvider = nil
 	}
 
-	views := make([]NextPickView, 0, len(providers))
-	for _, provider := range providers {
-		model := RepresentativeModels[provider]
-		view := NextPickView{Provider: provider, Model: model}
-		if authID, okPick := h.sources.Preview(byProvider[provider], provider, model, now); okPick {
+	views := make([]NextPickView, 0, len(RepresentativePicks))
+	for _, pick := range RepresentativePicks {
+		view := NextPickView{Provider: pick.Provider, Model: pick.Model}
+		if authID, okPick := h.sources.Preview(byProvider[pick.Provider], pick.Provider, pick.Model, now); okPick {
 			view.AuthID, view.Auth, view.Ranked = Redact(authID), Redact(authID), true
 		}
 		views = append(views, view)

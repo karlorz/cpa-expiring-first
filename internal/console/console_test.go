@@ -204,8 +204,8 @@ func TestUnknownRouteIsNotFound(t *testing.T) {
 func TestStatusViewShowsNextPicksAndCounts(t *testing.T) {
 	handler, _ := newTestHandler()
 	view := handler.statusView(context.Background())
-	if len(view.NextPicks) != len(RepresentativeModels) {
-		t.Fatalf("next picks = %+v, want one per provider", view.NextPicks)
+	if len(view.NextPicks) != len(RepresentativePicks) {
+		t.Fatalf("next picks = %+v, want one per representative model", view.NextPicks)
 	}
 	for _, pick := range view.NextPicks {
 		if !pick.Ranked || pick.Auth == "" {

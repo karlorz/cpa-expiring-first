@@ -62,9 +62,16 @@ type Window struct {
 
 // WindowFrom converts a parser window into a reading window.
 func WindowFrom(quota QuotaWindow, models []string) Window {
+	used := float64(100 - quota.Remaining)
+	if used < 0 {
+		used = 0
+	}
+	if used > 100 {
+		used = 100
+	}
 	return Window{
 		Minutes:     quota.Duration.Minutes(),
-		UsedPercent: float64(100 - quota.Remaining),
+		UsedPercent: used,
 		ResetsAt:    quota.ResetAt,
 		Models:      models,
 	}
