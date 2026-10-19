@@ -1,3 +1,7 @@
+## v0.3.5
+
+- Show Codex weekly-soonest **Order** on the schedule table and write those integers into credential priority. Websocket Codex requests still go to the host, which fill-firsts using 100/99/…. Five-hour exhausted Codex accounts stay Priority 0.
+
 ## v0.3.4
 
 - After each probe, write weekly-soonest **Order** into credential **priority** integers (`#1` = 100, then 99, 98…; exhausted = 0). Larger value means higher CPA fill-first priority. Failed probes keep the current integer. Disable with `write_priorities: false`.

@@ -333,7 +333,6 @@ func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, 
 		quota = dropClaudeGPTQuota(quota)
 	}
 	rows := make([]CandidateRank, 0, len(candidates))
-	delegated := normalizeProvider(provider) == "codex" && anyWebsocketCandidate(eligibleRankCandidates(candidates, now))
 	for _, candidate := range candidates {
 		row := CandidateRank{AuthID: candidate.ID, Priority: candidate.Priority, FiveHour: "Not reported"}
 		for _, w := range quota[candidate.ID].Windows {
@@ -363,12 +362,9 @@ func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, 
 		}
 		row.Reason = runtimeExclusion(candidate, now)
 		if row.Reason == "" {
-			switch {
-			case !cfg.Applies(provider):
+			if !cfg.Applies(provider) {
 				row.Reason = "Provider delegated to host"
-			case delegated:
-				row.Reason = "Codex websocket pool delegated to host"
-			default:
+			} else {
 				_, row.Reason = quotaCandidateRank(candidate, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
 			}
 		}
@@ -405,16 +401,6 @@ func runtimeExclusion(candidate pluginapi.SchedulerAuthCandidate, now time.Time)
 		return "Host unavailable"
 	}
 	return ""
-}
-
-func eligibleRankCandidates(candidates []pluginapi.SchedulerAuthCandidate, now time.Time) []pluginapi.SchedulerAuthCandidate {
-	eligible := make([]pluginapi.SchedulerAuthCandidate, 0, len(candidates))
-	for _, c := range candidates {
-		if runtimeExclusion(c, now) == "" {
-			eligible = append(eligible, c)
-		}
-	}
-	return eligible
 }
 
 // ClaudeGPTWindow reports an Antigravity Claude/GPT/OpenAI quota window.

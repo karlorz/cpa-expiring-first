@@ -213,10 +213,36 @@ func TestRankCandidatesTiesAndDelegation(t *testing.T) {
 		t.Fatalf("ties=%+v", rows)
 	}
 	candidates[0].Attributes = map[string]string{"websockets": "true"}
-	rows = RankCandidates(candidates, quota, "codex", "gpt-test", t0, DefaultConfig())
-	for _, row := range rows {
-		if row.Order != 0 || row.Reason != "Codex websocket pool delegated to host" {
-			t.Fatalf("delegation=%+v", rows)
-		}
+	rows = RankCandidates(candidates, quota, "codex", "gpt-6.1-sol", t0, DefaultConfig())
+	if rows[0].AuthID != "b" || rows[0].Order != 1 {
+		t.Fatalf("codex order=%+v, want weekly-soonest despite websocket candidates", rows)
+	}
+}
+
+func TestCodexWebsocketPoolStillHasWeeklySoonestOrder(t *testing.T) {
+	quota := Quota{
+		"soon":      reading(weekly(20, t0.Add(24*time.Hour)), session(10, t0.Add(time.Hour))),
+		"exhausted": reading(weekly(20, t0.Add(12*time.Hour)), session(100, t0.Add(10*time.Minute))),
+		"later":     reading(weekly(20, t0.Add(48*time.Hour))),
+	}
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		{ID: "soon", Attributes: map[string]string{"websockets": "true"}},
+		{ID: "exhausted", Attributes: map[string]string{"websockets": "true"}},
+		{ID: "later"},
+	}
+	rows := RankCandidates(candidates, quota, "codex", "gpt-6.1-sol", t0, DefaultConfig())
+	if rows[0].AuthID != "soon" || rows[0].Order != 1 || rows[1].AuthID != "later" || rows[1].Order != 2 {
+		t.Fatalf("codex order=%+v", rows)
+	}
+	if rows[2].AuthID != "exhausted" || rows[2].Order != 0 || rows[2].Reason != "Five-hour quota exhausted" {
+		t.Fatalf("exhausted=%+v", rows[2])
+	}
+	writes := AssignPriorityWrites(rows)
+	got := map[string]int{}
+	for _, write := range writes {
+		got[write.AuthID] = write.To
+	}
+	if got["soon"] != 100 || got["later"] != 99 || got["exhausted"] != 0 {
+		t.Fatalf("codex priority writes=%+v", writes)
 	}
 }

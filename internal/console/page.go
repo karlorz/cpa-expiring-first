@@ -115,7 +115,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Schedule outcome</h2>
-    <p class="muted">Live account list and saved account priority from the host, ranked by this scheduler. #1 is the predicted next pick. Last selected is the latest actual pick. Weekly and five-hour columns are Gemini quota for Antigravity; Claude/GPT/OpenAI quota is not probed unless enabled. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
+    <p class="muted">Live account list ranked weekly-soonest, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
     <div id="account-order"></div>
   </section>
 
