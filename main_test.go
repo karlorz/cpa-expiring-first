@@ -137,7 +137,7 @@ func TestCodexWebsocketPoolsStayUnhandled(t *testing.T) {
 	}
 }
 
-func TestPreviewCandidatesRespectRuntimeEligibility(t *testing.T) {
+func TestPreviewCandidatesPreserveRuntimeEligibility(t *testing.T) {
 	files := []pluginapi.HostAuthFileEntry{
 		{ID: "ready", Provider: "antigravity", Priority: 42},
 		{ID: "disabled", Provider: "antigravity", Disabled: true},
@@ -145,9 +145,12 @@ func TestPreviewCandidatesRespectRuntimeEligibility(t *testing.T) {
 		{ID: "cooldown", Provider: "antigravity", NextRetryAfter: testNow.Add(time.Hour)},
 		{ID: "ws", Type: "codex", Websockets: true},
 	}
-	got := previewCandidates(files, testNow)
-	if len(got["antigravity"]) != 1 || got["antigravity"][0].ID != "ready" || got["antigravity"][0].Priority != 42 {
+	got := previewCandidates(files)
+	if len(got["antigravity"]) != 4 || got["antigravity"][0].ID != "ready" || got["antigravity"][0].Priority != 42 {
 		t.Fatalf("eligible antigravity candidates = %+v", got["antigravity"])
+	}
+	if got["antigravity"][1].Attributes["disabled"] != "true" || got["antigravity"][2].Attributes["unavailable"] != "true" {
+		t.Fatal("excluded runtime metadata missing")
 	}
 	if len(got["codex"]) != 1 || got["codex"][0].Attributes["websockets"] != "true" {
 		t.Fatalf("codex candidates = %+v", got["codex"])

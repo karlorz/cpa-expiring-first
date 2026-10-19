@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -176,12 +178,8 @@ type rankedCandidate struct {
 func rankByQuota(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, model string, now time.Time, maxAge time.Duration, reservePercent float64) (quotaChoice, bool) {
 	var best *rankedCandidate
 	for _, candidate := range candidates {
-		account, known := quota[candidate.ID]
-		if !known || now.Sub(account.UpdatedAt) > maxAge {
-			continue
-		}
-		resetsAt, usable := accountRank(account, model, now, reservePercent)
-		if !usable {
+		resetsAt, reason := quotaCandidateRank(candidate, quota, model, now, maxAge, reservePercent)
+		if reason != "" {
 			continue
 		}
 		next := rankedCandidate{candidate: candidate, resetsAt: resetsAt}
@@ -250,4 +248,125 @@ func ranksBefore(a, b rankedCandidate) bool {
 		return a.candidate.Priority > b.candidate.Priority
 	}
 	return a.candidate.ID < b.candidate.ID
+}
+
+// CandidateRank explains a candidate's model-specific quota order. Order is zero for exclusions.
+type CandidateRank struct {
+	AuthID   string
+	Priority int
+	Order    int
+	ResetsAt time.Time
+	FiveHour string
+	Reason   string
+}
+
+func quotaCandidateRank(candidate pluginapi.SchedulerAuthCandidate, quota Quota, model string, now time.Time, maxAge time.Duration, reserve float64) (time.Time, string) {
+	account, known := quota[candidate.ID]
+	if !known || len(account.Windows) == 0 {
+		return time.Time{}, "No quota reading"
+	}
+	if account.UpdatedAt.IsZero() || now.Sub(account.UpdatedAt) > maxAge {
+		return time.Time{}, "Quota reading expired"
+	}
+	reset, usable := accountRank(account, model, now, reserve)
+	if usable {
+		return reset, ""
+	}
+	for _, window := range account.Windows {
+		if appliesTo(window, model) && window.ResetsAt.After(now) && window.UsedPercent >= 100-reserve {
+			if window.Minutes == 300 {
+				return time.Time{}, "Five-hour quota exhausted"
+			}
+			return time.Time{}, "Applicable quota exhausted"
+		}
+	}
+	return time.Time{}, "No quota window for this model"
+}
+
+// RankCandidates returns the same quota ordering used by picks, followed by excluded accounts.
+// Runtime attributes are supplied by the console's host listing; request candidates are already filtered.
+func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, provider, model string, now time.Time, cfg Config) []CandidateRank {
+	rows := make([]CandidateRank, 0, len(candidates))
+	delegated := normalizeProvider(provider) == "codex" && anyWebsocketCandidate(eligibleRankCandidates(candidates, now))
+	for _, candidate := range candidates {
+		row := CandidateRank{AuthID: candidate.ID, Priority: candidate.Priority, FiveHour: "Not reported"}
+		for _, w := range quota[candidate.ID].Windows {
+			if !appliesTo(w, baseModel(model)) || w.Minutes != 300 {
+				continue
+			}
+			if row.FiveHour == "Exhausted" {
+				continue
+			}
+			if !w.ResetsAt.After(now) {
+				row.FiveHour = "Reset / available"
+			} else if w.UsedPercent >= 100-cfg.ReservePercent() {
+				row.FiveHour = "Exhausted"
+			} else {
+				row.FiveHour = "Available"
+			}
+		}
+		evidence := quota[candidate.ID]
+		unchecked := QuotaAccount{Windows: make([]QuotaWindow, len(evidence.Windows))}
+		copy(unchecked.Windows, evidence.Windows)
+		for index := range unchecked.Windows {
+			unchecked.Windows[index].UsedPercent = 0
+		}
+		row.ResetsAt, _ = accountRank(unchecked, baseModel(model), now, cfg.ReservePercent())
+		if evidence.UpdatedAt.IsZero() || now.Sub(evidence.UpdatedAt) > cfg.MaxAge() {
+			row.FiveHour = "Unknown / no fresh evidence"
+		}
+		row.Reason = runtimeExclusion(candidate, now)
+		if row.Reason == "" {
+			switch {
+			case !cfg.Applies(provider):
+				row.Reason = "Provider delegated to host"
+			case delegated:
+				row.Reason = "Codex websocket pool delegated to host"
+			default:
+				_, row.Reason = quotaCandidateRank(candidate, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
+			}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if (a.Reason == "") != (b.Reason == "") {
+			return a.Reason == ""
+		}
+		if a.Reason != "" {
+			return a.AuthID < b.AuthID
+		}
+		return ranksBefore(rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: a.AuthID, Priority: a.Priority}, resetsAt: a.ResetsAt}, rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: b.AuthID, Priority: b.Priority}, resetsAt: b.ResetsAt})
+	})
+	order := 0
+	for i := range rows {
+		if rows[i].Reason == "" {
+			order++
+			rows[i].Order = order
+		}
+	}
+	return rows
+}
+
+func runtimeExclusion(candidate pluginapi.SchedulerAuthCandidate, now time.Time) string {
+	if disabled, _ := strconv.ParseBool(candidate.Attributes["disabled"]); disabled {
+		return "Account disabled"
+	}
+	if retry, err := time.Parse(time.RFC3339Nano, candidate.Attributes["next_retry_after"]); err == nil && retry.After(now) {
+		return "Host cooldown"
+	}
+	if unavailable, _ := strconv.ParseBool(candidate.Attributes["unavailable"]); unavailable {
+		return "Host unavailable"
+	}
+	return ""
+}
+
+func eligibleRankCandidates(candidates []pluginapi.SchedulerAuthCandidate, now time.Time) []pluginapi.SchedulerAuthCandidate {
+	eligible := make([]pluginapi.SchedulerAuthCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if runtimeExclusion(c, now) == "" {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible
 }

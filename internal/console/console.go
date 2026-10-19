@@ -71,8 +71,6 @@ type Sources interface {
 	// Candidates returns the credentials the host currently offers, keyed by provider. One call
 	// covers every provider, so the page costs the host a single listing.
 	Candidates(ctx context.Context) (map[string][]pluginapi.SchedulerAuthCandidate, error)
-	// Preview returns the credential the ranking would pick next, without changing a pin.
-	Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, now time.Time) (string, bool)
 	// Config describes the active configuration.
 	Config() router.Config
 	// Live describes the active Live Voice configuration.
@@ -221,7 +219,21 @@ type PreviewView struct {
 	// Ranked reports that fresh quota readings decided this preview, rather than the sticky pin.
 	Ranked bool `json:"ranked"`
 	// Observed reports that a pin exists for this route, so the plugin routed real traffic here.
-	Observed bool `json:"observed_traffic"`
+	Observed bool          `json:"observed_traffic"`
+	Accounts []RankingView `json:"accounts"`
+}
+
+// RankingView explains one account's position for a model route.
+type RankingView struct {
+	Order        int        `json:"order"`
+	Auth         string     `json:"auth"`
+	Priority     int        `json:"account_priority"`
+	ResetAt      *time.Time `json:"ranking_reset_at,omitempty"`
+	ResetIn      string     `json:"ranking_reset_in"`
+	FiveHour     string     `json:"five_hour"`
+	Reason       string     `json:"reason"`
+	Next         bool       `json:"next_pick"`
+	LastSelected bool       `json:"last_selected"`
 }
 
 // PickCountView is the JSON shape of one provider's pick counters.
@@ -418,12 +430,43 @@ func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
 	if errCandidates != nil {
 		byProvider = nil
 	}
+	pins := h.sources.Pins()
+	quota := h.sources.Quota()
+	cfg := h.sources.Config()
+	probeErrors := make(map[string]string)
+	for _, account := range h.sources.Accounts() {
+		probeErrors[account.AuthID] = account.Error
+	}
 	for index := range views {
-		authID, okPick := h.sources.Preview(byProvider[views[index].Provider], views[index].Provider, views[index].Model, now)
-		if !okPick {
-			continue
+		rows := router.RankCandidates(byProvider[views[index].Provider], quota, views[index].Provider, views[index].Model, now, cfg)
+		for _, row := range rows {
+			reason := row.Reason
+			if row.Order == 0 && probeErrors[row.AuthID] != "" {
+				reason += "; latest probe: " + probeErrors[row.AuthID]
+			}
+			if reason == "" {
+				if row.Order == 1 {
+					reason = "First by reset, priority, then auth ID"
+				} else {
+					reason = "Ordered by reset, priority, then auth ID"
+				}
+			}
+			entry := RankingView{Order: row.Order, Auth: Redact(row.AuthID), Priority: row.Priority, FiveHour: row.FiveHour, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
+			if !row.ResetsAt.IsZero() {
+				reset := row.ResetsAt.UTC()
+				entry.ResetAt = &reset
+				entry.ResetIn = ageString(now, reset)
+			}
+			for _, pin := range pins {
+				if previewKey(pin.Provider, pin.Model) == previewKey(views[index].Provider, views[index].Model) && pin.AuthID == row.AuthID {
+					entry.LastSelected = true
+				}
+			}
+			views[index].Accounts = append(views[index].Accounts, entry)
 		}
-		views[index].AuthID, views[index].Auth, views[index].Ranked = Redact(authID), Redact(authID), true
+		if len(rows) > 0 && rows[0].Order == 1 {
+			views[index].AuthID, views[index].Auth, views[index].Ranked = Redact(rows[0].AuthID), Redact(rows[0].AuthID), true
+		}
 	}
 	return views
 }

@@ -745,13 +745,13 @@ func (consoleSources) Candidates(ctx context.Context) (map[string][]pluginapi.Sc
 	if errUnmarshal := json.Unmarshal(result, &list); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode preview candidates: %w", errUnmarshal)
 	}
-	return previewCandidates(list.Files, time.Now()), nil
+	return previewCandidates(list.Files), nil
 }
 
-func previewCandidates(files []pluginapi.HostAuthFileEntry, now time.Time) map[string][]pluginapi.SchedulerAuthCandidate {
+func previewCandidates(files []pluginapi.HostAuthFileEntry) map[string][]pluginapi.SchedulerAuthCandidate {
 	byProvider := make(map[string][]pluginapi.SchedulerAuthCandidate)
 	for _, file := range files {
-		if file.ID == "" || file.Disabled || file.Unavailable || file.NextRetryAfter.After(now) {
+		if file.ID == "" {
 			continue
 		}
 		provider := strings.ToLower(strings.TrimSpace(file.Provider))
@@ -763,14 +763,15 @@ func previewCandidates(files []pluginapi.HostAuthFileEntry, now time.Time) map[s
 		}
 		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{
 			ID: file.ID, Provider: provider, Priority: file.Priority, Status: file.Status,
-			Attributes: map[string]string{"websockets": strconv.FormatBool(file.Websockets)},
+			Attributes: map[string]string{
+				"websockets":       strconv.FormatBool(file.Websockets),
+				"disabled":         strconv.FormatBool(file.Disabled),
+				"unavailable":      strconv.FormatBool(file.Unavailable),
+				"next_retry_after": file.NextRetryAfter.Format(time.RFC3339Nano),
+			},
 		})
 	}
 	return byProvider
-}
-
-func (consoleSources) Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, now time.Time) (string, bool) {
-	return scheduler.Preview(candidates, provider, model, now)
 }
 
 func (consoleSources) Config() router.Config { return scheduler.Configuration() }

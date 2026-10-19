@@ -1,3 +1,10 @@
+## v0.3.2
+
+- Show **Account selection order** above quota details for configured and observed models. Include ranked accounts, predicted next pick, last selected account, ranking reset, five-hour eligibility, saved account priority, and exclusion reasons.
+- Reuse the request scheduler's quota eligibility and reset comparison logic for the displayed order. Preserve excluded runtime accounts in the read-only listing so disabled, unavailable, cooling down, stale, exhausted, and missing-reading states remain visible.
+- Use one ranking snapshot for the winner preview and ordered table. Keep account priorities and routing state unchanged when rendering.
+- Add regressions for display/pick consistency, five-hour reset return, priority ties, websocket delegation, private labels, and read-only rendering.
+
 ## v0.3.1
 
 - Replace example model previews with configured `preview_models` and routes observed in scheduler picks. Preview the daily Antigravity route with `provider: antigravity`, `model: gemini-3.8-flash-high`.

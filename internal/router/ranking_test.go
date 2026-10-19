@@ -143,3 +143,57 @@ func TestPreviewMirrorsCodexWebsocketDelegation(t *testing.T) {
 		t.Fatalf("Preview = %q,%v; want delegated", id, ok)
 	}
 }
+
+func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
+	cfg := DefaultConfig()
+	quota := Quota{
+		"soon":      reading(weekly(20, t0.Add(time.Hour)), session(10, t0.Add(10*time.Minute))),
+		"later":     reading(weekly(10, t0.Add(2*time.Hour))),
+		"five-hour": reading(weekly(10, t0.Add(30*time.Minute)), session(100, t0.Add(10*time.Minute))),
+		"expired":   {UpdatedAt: t0.Add(-time.Hour), Windows: []QuotaWindow{weekly(10, t0.Add(time.Hour))}},
+		"scoped":    reading(QuotaWindow{Minutes: 10080, Models: []string{"claude"}, ResetsAt: t0.Add(time.Hour)}),
+		"disabled":  reading(weekly(10, t0.Add(time.Minute))),
+	}
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		{ID: "later", Priority: 100}, {ID: "soon"}, {ID: "five-hour"}, {ID: "expired"}, {ID: "scoped"}, {ID: "missing"},
+		{ID: "disabled", Attributes: map[string]string{"disabled": "true"}},
+		{ID: "cooldown", Attributes: map[string]string{"next_retry_after": t0.Add(time.Hour).Format(time.RFC3339Nano)}},
+	}
+	rows := RankCandidates(candidates, quota, "antigravity", "gemini-3.8-flash-high", t0, cfg)
+	if rows[0].AuthID != "soon" || rows[0].Order != 1 || rows[1].AuthID != "later" || rows[1].Order != 2 {
+		t.Fatalf("order=%+v", rows)
+	}
+	choice, ok := rankByQuota(candidates[:6], quota, "gemini-3.8-flash-high", t0, cfg.MaxAge(), cfg.ReservePercent())
+	if !ok || rows[0].AuthID != choice.authID {
+		t.Fatal("display and pick differ")
+	}
+	reasons := map[string]string{}
+	for _, row := range rows {
+		reasons[row.AuthID] = row.Reason
+	}
+	for id, want := range map[string]string{"five-hour": "Five-hour quota exhausted", "expired": "Quota reading expired", "scoped": "No quota window for this model", "missing": "No quota reading", "disabled": "Account disabled", "cooldown": "Host cooldown"} {
+		if reasons[id] != want {
+			t.Errorf("%s reason=%q want %q", id, reasons[id], want)
+		}
+	}
+	after := RankCandidates(candidates, quota, "antigravity", "gemini-3.8-flash-high", t0.Add(11*time.Minute), cfg)
+	if after[0].AuthID != "five-hour" {
+		t.Fatalf("reset order=%+v", after)
+	}
+}
+
+func TestRankCandidatesTiesAndDelegation(t *testing.T) {
+	quota := Quota{"a": reading(weekly(10, t0.Add(time.Hour))), "b": reading(weekly(10, t0.Add(time.Hour))), "unstarted": reading(weekly(0, time.Time{}))}
+	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "a", Priority: 1}, {ID: "b", Priority: 2}, {ID: "unstarted", Priority: 100}}
+	rows := RankCandidates(candidates, quota, "antigravity", "gemini-3.8-flash-high", t0, DefaultConfig())
+	if rows[0].AuthID != "b" || rows[1].AuthID != "a" || rows[2].AuthID != "unstarted" {
+		t.Fatalf("ties=%+v", rows)
+	}
+	candidates[0].Attributes = map[string]string{"websockets": "true"}
+	rows = RankCandidates(candidates, quota, "codex", "gpt-test", t0, DefaultConfig())
+	for _, row := range rows {
+		if row.Order != 0 || row.Reason != "Codex websocket pool delegated to host" {
+			t.Fatalf("delegation=%+v", rows)
+		}
+	}
+}

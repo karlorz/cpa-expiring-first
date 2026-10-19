@@ -122,6 +122,7 @@ It needs no management key and shows:
 - Plugin registration, observed routing activity, version, probe interval, last probe time, and Live Voice pool. Registration alone does not prove that the host selected this scheduler.
 - The current **pins** table: provider, model, redacted auth, pin time, last pick time and availability.
 - **Per-account windows**: provider, redacted auth, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
+- **Account selection order** for each configured or observed model: ranked accounts, predicted next pick, last selected account, ranking reset, five-hour eligibility, account priority, and exclusion reasons. The order shares the scheduler’s quota eligibility and reset comparison logic; request-time model support and cooldowns can change the candidates. Saved account priorities stay as configured.
 - **Model previews** from `preview_models` and routes observed in scheduler picks. Previews estimate quota ranking from account-level eligibility; the host applies model support, request restrictions, and model-specific cooldowns at request time.
 - **Pick counts** per provider (handled and quota-ranked). These count scheduler decisions; successful upstream completions require request logs.
 

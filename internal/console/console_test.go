@@ -80,10 +80,6 @@ func (f *fakeSources) Candidates(ctx context.Context) (map[string][]pluginapi.Sc
 	}, nil
 }
 
-func (f *fakeSources) Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, at time.Time) (string, bool) {
-	return "antigravity-primary-account.json", true
-}
-
 func (f *fakeSources) Config() router.Config {
 	raw := "preview_models:\n"
 	for _, preview := range f.previewModels {
@@ -345,8 +341,8 @@ func TestPreviewsComeFromConfigAndPinsOnly(t *testing.T) {
 		if !want[key] {
 			t.Errorf("preview %+v is not a configured or observed route", preview)
 		}
-		if !preview.Ranked || preview.Auth == "" {
-			t.Errorf("preview %+v, want a ranked redacted pick", preview)
+		if len(preview.Accounts) == 0 {
+			t.Errorf("preview %+v has no ranking explanations", preview)
 		}
 	}
 	for _, preview := range view.Previews {
@@ -577,5 +573,33 @@ func TestRetainedEvidenceShowsOriginalAgeAndStaleness(t *testing.T) {
 	view := handler.quotaView(context.Background())
 	if len(view) != 1 || !view[0].Stale || !view[0].Retained || !view[0].UpdatedAt.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("retained view=%+v", view)
+	}
+}
+
+func TestAccountOrderIsModelScopedRedactedAndReadOnly(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.quota["antigravity-primary-account.json"] = router.QuotaAccount{UpdatedAt: now, Windows: []router.QuotaWindow{{Minutes: 10080, ResetsAt: now.Add(time.Hour), Models: []string{"gemini"}}, {Minutes: 300, ResetsAt: now.Add(time.Minute), UsedPercent: 10, Models: []string{"gemini"}}}}
+	before := sources.pinned[0]
+	view := handler.statusView(context.Background())
+	for _, route := range view.Previews {
+		if route.Provider != "antigravity" {
+			continue
+		}
+		if len(route.Accounts) != 1 || route.Accounts[0].Order != 1 || !route.Accounts[0].Next || route.Accounts[0].Auth != Redact("antigravity-primary-account.json") {
+			t.Fatalf("order=%+v", route.Accounts)
+		}
+		if route.Model == "gemini-3-pro" && !route.Accounts[0].LastSelected {
+			t.Fatal("last selected missing")
+		}
+	}
+	if sources.refreshed != 0 || sources.pinned[0] != before {
+		t.Fatal("ranking changed routing state")
+	}
+	raw, _ := json.Marshal(view)
+	if strings.Contains(string(raw), "antigravity-primary-account.json") {
+		t.Fatal("raw credential leaked")
+	}
+	if strings.Index(StatusHTML, "Account selection order") > strings.Index(StatusHTML, "Accounts and quota windows") {
+		t.Fatal("ranking must precede quota")
 	}
 }
