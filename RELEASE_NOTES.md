@@ -1,3 +1,7 @@
+## v0.3.6
+
+- List every changeable plugin setting on the CPA Plugins form with the ParseConfig default in the field description: `max_age=30m`, `probe_interval=5m`, `switch_after=5m`, `reserve_percent=0`, `clear_stale_cooldowns=true`, `write_priorities=true`, `probe_antigravity_claude_gpt=false`, `fail_closed=true`.
+
 ## v0.3.5
 
 - Show Codex weekly-soonest **Order** on the schedule table and write those integers into credential priority. Websocket Codex requests still go to the host, which fill-firsts using 100/99/…. Five-hour exhausted Codex accounts stay Priority 0.

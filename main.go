@@ -548,79 +548,31 @@ func pluginRegistration() registration {
 			Version:          version,
 			Author:           "karlorz",
 			GitHubRepository: repository,
-			ConfigFields: []pluginapi.ConfigField{
-				{
-					Name:        "providers",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Provider keys to route, for example claude and codex. Empty applies to every provider.",
-				},
-				{
-					Name:        "quota_file",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Optional quota file overlay (schema expiring-first.quota.v1). Empty uses in-process probes.",
-				},
-				{
-					Name:        "max_age",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "How old an account's quota reading may be before it is ignored (Go duration, default 30m).",
-				},
-				{
-					Name:        "reserve_percent",
-					Type:        pluginapi.ConfigFieldTypeNumber,
-					Description: "Quota share left untouched: a window counts as exhausted at 100 minus this (default 0).",
-				},
-				{
-					Name:        "clear_stale_cooldowns",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Clear quota cooldowns that newer quota readings show to be over, e.g. after a limit reset (default true; needs CLIProxyAPI 8.0.12+).",
-				},
-				{
-					Name:        "switch_after",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Sticky fallback: how long the pinned credential must stay unavailable before the pin moves (Go duration, default 5m).",
-				},
-				{
-					Name:        "pins_file",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Absolute path of a JSON file that keeps pins across restarts. Empty keeps pins in memory only.",
-				},
-				{
-					Name:        "probe_interval",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "How often the in-process quota probes refresh every credential's readings (Go duration, default 5m).",
-				},
-				{
-					Name:        "preview_models",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Pinned preview routes as provider/model objects. Other preview routes come from observed scheduler picks.",
-				},
-				{
-					Name:        "probe_antigravity_claude_gpt",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: only Gemini quota is probed and ranked.",
-				},
-				{
-					Name:        "write_priorities",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher). CPA fill-first then follows that queue. Default true.",
-				},
-				{
-					Name:        "live_auth_ids",
-					Type:        pluginapi.ConfigFieldTypeArray,
-					Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Empty leaves Live requests to the host's built-in scheduler.",
-				},
-				{
-					Name:        "fail_closed",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Reject a Live request when no configured live_auth_ids credential is available, instead of delegating to the built-in scheduler (default true).",
-				},
-			},
+			ConfigFields:     configFields(),
 		},
 		Capabilities: capabilities{
 			Scheduler:                 true,
 			SchedulerAcrossPriorities: true,
 			ManagementAPI:             true,
 		},
+	}
+}
+
+func configFields() []pluginapi.ConfigField {
+	return []pluginapi.ConfigField{
+		{Name: "providers", Type: pluginapi.ConfigFieldTypeArray, Description: "Provider keys to route, for example claude and codex. Default empty: every provider."},
+		{Name: "quota_file", Type: pluginapi.ConfigFieldTypeString, Description: "Optional quota file overlay (schema expiring-first.quota.v1). Default empty: in-process probes."},
+		{Name: "max_age", Type: pluginapi.ConfigFieldTypeString, Description: "How old an account quota reading may be before it is ignored. Default 30m."},
+		{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeNumber, Description: "Quota share left untouched: a window counts as exhausted at 100 minus this. Default 0."},
+		{Name: "clear_stale_cooldowns", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Clear quota cooldowns that newer quota readings show to be over. Default true. Needs CLIProxyAPI 8.0.12+."},
+		{Name: "switch_after", Type: pluginapi.ConfigFieldTypeString, Description: "Sticky fallback: how long the pinned credential must stay unavailable before the pin moves. Default 5m."},
+		{Name: "pins_file", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute path of a JSON file that keeps pins across restarts. Default empty: memory only."},
+		{Name: "probe_interval", Type: pluginapi.ConfigFieldTypeString, Description: "How often the in-process quota probes refresh every credential reading. Default 5m."},
+		{Name: "preview_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Pinned preview routes as {provider, model} objects. Default empty: observed scheduler picks only."},
+		{Name: "probe_antigravity_claude_gpt", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only."},
+		{Name: "write_priorities", Type: pluginapi.ConfigFieldTypeBoolean, Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher) so CPA fill-first follows that queue. Default true."},
+		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Default empty: host built-in scheduler."},
+		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true."},
 	}
 }
 

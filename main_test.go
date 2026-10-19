@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,5 +187,32 @@ func TestConfiguredLivePoolRejectsUnavailableCredentials(t *testing.T) {
 	resp := decodePick(t, codexPick(live.Model, pluginapi.SchedulerAuthCandidate{ID: "ordinary"}))
 	if !resp.Handled || !resp.Reject || resp.RejectCode != live.RejectCodeLiveUnavailable {
 		t.Fatalf("pick = %+v, want fail-closed rejection", resp)
+	}
+}
+
+func TestConfigFieldsDeclarePluginDefaults(t *testing.T) {
+	cfg, err := router.ParseConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]pluginapi.ConfigField{}
+	for _, field := range configFields() {
+		got[field.Name] = field
+	}
+	for _, name := range []string{
+		"providers", "quota_file", "max_age", "reserve_percent", "clear_stale_cooldowns",
+		"switch_after", "pins_file", "probe_interval", "preview_models",
+		"probe_antigravity_claude_gpt", "write_priorities", "live_auth_ids", "fail_closed",
+	} {
+		field, ok := got[name]
+		if !ok || field.Description == "" {
+			t.Errorf("config field %s missing from the Plugins form", name)
+		}
+	}
+	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") {
+		t.Fatalf("form descriptions missing defaults")
+	}
+	if cfg.MaxAge() != 30*time.Minute || cfg.ProbeInterval() != 5*time.Minute || !cfg.WritePriorities() || cfg.ProbeAntigravityClaudeGPT() {
+		t.Fatalf("ParseConfig defaults = max_age=%s probe_interval=%s write_priorities=%v claude_gpt=%v", cfg.MaxAge(), cfg.ProbeInterval(), cfg.WritePriorities(), cfg.ProbeAntigravityClaudeGPT())
 	}
 }
