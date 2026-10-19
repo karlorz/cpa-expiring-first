@@ -31,6 +31,8 @@ type Header map[string][]string
 type AuthFile struct {
 	ID             string    `json:"id"`
 	AuthIndex      string    `json:"auth_index"`
+	Name           string    `json:"name,omitempty"`
+	Priority       int       `json:"priority,omitempty"`
 	Type           string    `json:"type,omitempty"`
 	Provider       string    `json:"provider,omitempty"`
 	ProjectID      string    `json:"project_id,omitempty"`
@@ -127,6 +129,7 @@ func looksLikeBase64(value string) bool {
 type Callbacks interface {
 	ListAuthFiles(ctx context.Context) ([]AuthFile, error)
 	GetAuth(ctx context.Context, authIndex string) (AuthDocument, error)
+	SaveAuth(ctx context.Context, name string, raw json.RawMessage) error
 	HTTPDo(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
 }
 
@@ -175,6 +178,57 @@ func (c *Client) GetAuthJSON(ctx context.Context, authIndex string) (json.RawMes
 		return nil, errGet
 	}
 	return document.JSON, nil
+}
+
+// SaveAuth persists one credential JSON through host.auth.save.
+func (c *Client) SaveAuth(ctx context.Context, name string, raw json.RawMessage) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(raw) == 0 {
+		return fmt.Errorf("%w: name and json are required", ErrInvalidRequest)
+	}
+	if errSave := c.callbacks.SaveAuth(ctx, name, raw); errSave != nil {
+		return fmt.Errorf("host.auth.save: %w", errSave)
+	}
+	return nil
+}
+
+// PatchPriority writes a top-level integer priority through host.auth.save. Invalid (non-integer)
+// values never reach this path. Larger values are higher fill-first priority.
+func (c *Client) PatchPriority(ctx context.Context, file AuthFile, priority int) error {
+	document, errGet := c.GetAuth(ctx, file.AuthIndex)
+	if errGet != nil {
+		return errGet
+	}
+	patched, errPatch := SetPriorityJSON(document.JSON, priority)
+	if errPatch != nil {
+		return errPatch
+	}
+	name := strings.TrimSpace(document.Name)
+	if name == "" {
+		name = strings.TrimSpace(file.Name)
+	}
+	if name == "" {
+		name = strings.TrimSpace(file.ID)
+	}
+	return c.SaveAuth(ctx, name, patched)
+}
+
+// SetPriorityJSON replaces the top-level priority field with an integer.
+func SetPriorityJSON(raw []byte, priority int) (json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if errUnmarshal := json.Unmarshal(raw, &object); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode credential json: %w", errUnmarshal)
+	}
+	encoded, errMarshal := json.Marshal(priority)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	object["priority"] = encoded
+	patched, errMarshal := json.Marshal(object)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	return patched, nil
 }
 
 // HTTPDo issues an upstream request and treats every non-2xx status as an error, with the body

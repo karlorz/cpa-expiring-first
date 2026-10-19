@@ -182,6 +182,29 @@ func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
 	}
 }
 
+func TestAssignPriorityWritesUsesIntegerFillFirstScale(t *testing.T) {
+	writes := AssignPriorityWrites([]CandidateRank{
+		{AuthID: "first", Order: 1, Priority: 97},
+		{AuthID: "second", Order: 2, Priority: 96},
+		{AuthID: "exhausted", Order: 0, Priority: 96, Reason: "Five-hour quota exhausted"},
+		{AuthID: "failed", Order: 0, Priority: 10, Reason: "No quota reading"},
+		{AuthID: "already", Order: 1, Priority: 100},
+	})
+	got := map[string]PriorityWrite{}
+	for _, write := range writes {
+		got[write.AuthID] = write
+	}
+	if got["first"].To != 100 || got["second"].To != 99 || got["exhausted"].To != 0 {
+		t.Fatalf("writes = %+v", writes)
+	}
+	if _, kept := got["failed"]; kept {
+		t.Fatal("failed probe wrote priority")
+	}
+	if _, skip := got["already"]; skip {
+		t.Fatal("unchanged integer was rewritten")
+	}
+}
+
 func TestRankCandidatesTiesAndDelegation(t *testing.T) {
 	quota := Quota{"a": reading(weekly(10, t0.Add(time.Hour))), "b": reading(weekly(10, t0.Add(time.Hour))), "unstarted": reading(weekly(0, time.Time{}))}
 	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "a", Priority: 1}, {ID: "b", Priority: 2}, {ID: "unstarted", Priority: 100}}

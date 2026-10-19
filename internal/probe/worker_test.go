@@ -34,7 +34,21 @@ func (f *fakeHost) GetAuth(ctx context.Context, authIndex string) (host.AuthDocu
 	if !okAuth {
 		return host.AuthDocument{}, errors.New("no auth")
 	}
-	return host.AuthDocument{AuthIndex: authIndex, JSON: raw}, nil
+	return host.AuthDocument{AuthIndex: authIndex, Name: authIndex + ".json", JSON: raw}, nil
+}
+
+func (f *fakeHost) SaveAuth(ctx context.Context, name string, raw json.RawMessage) error {
+	if f.auth == nil {
+		f.auth = map[string]json.RawMessage{}
+	}
+	f.auth[name] = raw
+	for index, body := range f.auth {
+		if strings.TrimSuffix(name, ".json") == index || name == index+".json" {
+			f.auth[index] = raw
+		}
+		_ = body
+	}
+	return nil
 }
 
 func (f *fakeHost) HTTPDo(ctx context.Context, req host.HTTPRequest) (host.HTTPResponse, error) {
@@ -129,6 +143,43 @@ func antigravityQuotaHost(t *testing.T, urls *[]string) *fakeHost {
 }
 
 // TestAntigravityDefaultProbesGeminiOnly leaves Claude/GPT/OpenAI quota unprobed.
+func TestProbeWritesWeeklySoonestFillFirstPriority(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	fake := &fakeHost{
+		files: []host.AuthFile{
+			{ID: "soon.json", AuthIndex: "soon", Name: "soon.json", Provider: "antigravity", Priority: 97},
+			{ID: "later.json", AuthIndex: "later", Name: "later.json", Provider: "antigravity", Priority: 96},
+		},
+		auth: map[string]json.RawMessage{
+			"soon":  json.RawMessage(`{"access_token":"t","project_id":"p","priority":97}`),
+			"later": json.RawMessage(`{"access_token":"t","project_id":"p","priority":96}`),
+		},
+		httpDo: func(req host.HTTPRequest) (host.HTTPResponse, error) {
+			reset := "2026-10-26T12:00:00Z"
+			if req.AuthIndex == "soon" {
+				reset = "2026-10-24T04:25:56Z"
+			}
+			return host.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.8,"resetTime":"` + reset + `"},{"window":"5h","remainingFraction":1,"resetTime":"2026-10-19T16:00:00Z"}]}]}`)}, nil
+		},
+	}
+	worker := NewWorker(router.NewMemoryQuota())
+	worker.Configure(router.DefaultConfig())
+	worker.Refresh(context.Background(), fake)
+	var soon, later struct {
+		Priority int `json:"priority"`
+	}
+	if err := json.Unmarshal(fake.auth["soon.json"], &soon); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(fake.auth["later.json"], &later); err != nil {
+		t.Fatal(err)
+	}
+	if soon.Priority != 100 || later.Priority != 99 {
+		t.Fatalf("priorities soon=%d later=%d, want 100 then 99", soon.Priority, later.Priority)
+	}
+	_ = now
+}
+
 func TestAntigravityDefaultProbesGeminiOnly(t *testing.T) {
 	var urls []string
 	memory := router.NewMemoryQuota()
@@ -148,7 +199,11 @@ func TestAntigravityClaudeGPTProbeOptIn(t *testing.T) {
 	var urls []string
 	memory := router.NewMemoryQuota()
 	worker := NewWorker(memory)
-	worker.Configure(DefaultInterval, true)
+	cfg, err := router.ParseConfig([]byte("probe_antigravity_claude_gpt: true\nwrite_priorities: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.Configure(cfg)
 	worker.Refresh(context.Background(), antigravityQuotaHost(t, &urls))
 	if len(urls) < 2 {
 		t.Fatalf("probe URLs = %v, want one request per model group", urls)

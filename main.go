@@ -248,7 +248,7 @@ func configure(raw []byte) error {
 	attachPinsFile(cfg.PinsFile())
 	attachQuotaFile(cfg.QuotaFile(), cfg.MaxAge())
 	attachLive(cfg)
-	probeWorker.Configure(cfg.ProbeInterval(), cfg.ProbeAntigravityClaudeGPT())
+	probeWorker.Configure(cfg)
 	probeWorker.Start(hostCallbacks{})
 	return nil
 }
@@ -600,6 +600,11 @@ func pluginRegistration() registration {
 					Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: only Gemini quota is probed and ranked.",
 				},
 				{
+					Name:        "write_priorities",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher). CPA fill-first then follows that queue. Default true.",
+				},
+				{
 					Name:        "live_auth_ids",
 					Type:        pluginapi.ConfigFieldTypeArray,
 					Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Empty leaves Live requests to the host's built-in scheduler.",
@@ -664,6 +669,21 @@ func (hostCallbacks) ListAuthFiles(ctx context.Context) ([]host.AuthFile, error)
 		return nil, fmt.Errorf("decode host.auth.list result: %w", errUnmarshal)
 	}
 	return list.Files, nil
+}
+
+func (hostCallbacks) SaveAuth(ctx context.Context, name string, raw json.RawMessage) error {
+	payload, errMarshal := json.Marshal(pluginapi.HostAuthSaveRequest{Name: name, JSON: raw})
+	if errMarshal != nil {
+		return errMarshal
+	}
+	response, errCall := callHost(pluginabi.MethodHostAuthSave, payload)
+	if errCall != nil {
+		return errCall
+	}
+	if _, errDecode := decodeHostResult(response); errDecode != nil {
+		return errDecode
+	}
+	return nil
 }
 
 func (hostCallbacks) GetAuth(ctx context.Context, authIndex string) (host.AuthDocument, error) {

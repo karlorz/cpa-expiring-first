@@ -54,11 +54,13 @@ type Config struct {
 	previewModels []PreviewModel
 	// probeAntigravityClaudeGPT probes Antigravity Claude/GPT/OpenAI quota. Default is off.
 	probeAntigravityClaudeGPT bool
+	// writePriorities writes weekly-soonest order into credential priority after each probe.
+	writePriorities bool
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
 func DefaultConfig() Config {
-	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true}
+	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true, writePriorities: true}
 }
 
 // ClearCooldowns reports whether stale quota cooldowns are cleared.
@@ -116,6 +118,11 @@ func (c Config) ProbeAntigravityClaudeGPT() bool {
 	return c.probeAntigravityClaudeGPT
 }
 
+// WritePriorities reports whether weekly-soonest order is written into credential priority.
+func (c Config) WritePriorities() bool {
+	return c.writePriorities
+}
+
 func (c Config) PreviewModels() []PreviewModel {
 	if len(c.previewModels) == 0 {
 		return nil
@@ -160,6 +167,7 @@ type rawConfig struct {
 	FailClosed                *bool          `yaml:"fail_closed"`
 	PreviewModels             []PreviewModel `yaml:"preview_models"`
 	ProbeAntigravityClaudeGPT *bool          `yaml:"probe_antigravity_claude_gpt"`
+	WritePriorities           *bool          `yaml:"write_priorities"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -205,6 +213,9 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if parsed.ProbeAntigravityClaudeGPT != nil {
 		cfg.probeAntigravityClaudeGPT = *parsed.ProbeAntigravityClaudeGPT
+	}
+	if parsed.WritePriorities != nil {
+		cfg.writePriorities = *parsed.WritePriorities
 	}
 
 	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs))

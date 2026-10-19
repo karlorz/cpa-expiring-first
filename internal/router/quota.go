@@ -250,6 +250,49 @@ func ranksBefore(a, b rankedCandidate) bool {
 	return a.candidate.ID < b.candidate.ID
 }
 
+// FillFirstPriorityBase is the integer written for schedule order #1. Larger values are higher
+// priority; CPA fill-first picks the largest integer first.
+const FillFirstPriorityBase = 100
+
+// PriorityWrite is one integer priority to persist so CPA fill-first follows weekly-soonest order.
+type PriorityWrite struct {
+	AuthID string
+	From   int
+	To     int
+	Reason string
+}
+
+// AssignPriorityWrites maps schedule order to unique integers. #1 becomes 100, #2 becomes 99.
+// Exhausted accounts become 0. Failed or missing readings produce no write, so the current
+// integer is kept. Equal values are omitted.
+func AssignPriorityWrites(rows []CandidateRank) []PriorityWrite {
+	writes := make([]PriorityWrite, 0, len(rows))
+	for _, row := range rows {
+		to, reason, ok := fillFirstPriority(row)
+		if !ok || to == row.Priority {
+			continue
+		}
+		writes = append(writes, PriorityWrite{AuthID: row.AuthID, From: row.Priority, To: to, Reason: reason})
+	}
+	return writes
+}
+
+func fillFirstPriority(row CandidateRank) (int, string, bool) {
+	if row.Order > 0 {
+		to := FillFirstPriorityBase - (row.Order - 1)
+		if to < 1 {
+			to = 1
+		}
+		return to, "weekly-soonest fill-first priority", true
+	}
+	switch row.Reason {
+	case "Five-hour quota exhausted", "Applicable quota exhausted":
+		return 0, "quota exhausted", true
+	default:
+		return 0, "", false
+	}
+}
+
 // CandidateRank explains a candidate's model-specific quota order. Order is zero for exclusions.
 type CandidateRank struct {
 	AuthID   string

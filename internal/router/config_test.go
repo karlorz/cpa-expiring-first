@@ -112,6 +112,9 @@ func TestDefaultConfigHasNoPinnedExamples(t *testing.T) {
 	if cfg.ProbeAntigravityClaudeGPT() {
 		t.Fatal("ProbeAntigravityClaudeGPT defaults on")
 	}
+	if !cfg.WritePriorities() {
+		t.Fatal("WritePriorities defaults off")
+	}
 }
 
 func TestParseConfigProbeAntigravityClaudeGPT(t *testing.T) {

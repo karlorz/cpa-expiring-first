@@ -221,6 +221,9 @@ plugins:
           model: gemini-3.8-flash-high
       # Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only.
       probe_antigravity_claude_gpt: false
+      # After each probe, write weekly-soonest order into credential priority
+      # (integers, larger = higher) so CPA fill-first follows that queue.
+      write_priorities: true
       # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
       live_auth_ids: [codex-live-account.json]
       # Reject a Live request when no live_auth_ids credential is available (default true).

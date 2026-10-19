@@ -19,6 +19,7 @@ import (
 	"github.com/karlorz/cpa-expiring-first/internal/probe/reading"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/xai"
 	"github.com/karlorz/cpa-expiring-first/internal/router"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // DefaultInterval is how often the worker refreshes every credential's quota readings.
@@ -88,6 +89,8 @@ type Worker struct {
 	running bool
 	// probeAntigravityClaudeGPT probes Antigravity Claude/GPT/OpenAI quota. Default is off.
 	probeAntigravityClaudeGPT bool
+	writePriorities           bool
+	ranking                   router.Config
 	// cancel stops the background loop; nil while it is not running.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -100,17 +103,25 @@ func NewWorker(memory *router.MemoryQuota) *Worker {
 
 // SetInterval changes how often the background loop probes.
 func (w *Worker) SetInterval(interval time.Duration) {
-	w.Configure(interval, w.ProbeAntigravityClaudeGPT())
+	w.mu.Lock()
+	if interval <= 0 {
+		interval = DefaultInterval
+	}
+	w.interval = interval
+	w.mu.Unlock()
 }
 
-// Configure sets the probe interval and whether Antigravity Claude/GPT/OpenAI quota is probed.
-func (w *Worker) Configure(interval time.Duration, probeAntigravityClaudeGPT bool) {
+// Configure applies probe interval, Antigravity Claude/GPT probing, and priority write-back.
+func (w *Worker) Configure(cfg router.Config) {
+	interval := cfg.ProbeInterval()
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
 	w.mu.Lock()
 	w.interval = interval
-	w.probeAntigravityClaudeGPT = probeAntigravityClaudeGPT
+	w.probeAntigravityClaudeGPT = cfg.ProbeAntigravityClaudeGPT()
+	w.writePriorities = cfg.WritePriorities()
+	w.ranking = cfg
 	w.mu.Unlock()
 }
 
@@ -213,7 +224,70 @@ func (w *Worker) Refresh(ctx context.Context, callbacks host.Callbacks) Snapshot
 	if !w.ProbeAntigravityClaudeGPT() {
 		accounts = dropClaudeGPTAccounts(accounts)
 	}
-	return w.publish(Snapshot{At: time.Now().UTC(), Accounts: accounts})
+	snapshot := w.publish(Snapshot{At: time.Now().UTC(), Accounts: accounts})
+	w.applyPriorityWrites(ctx, client, snapshot)
+	return snapshot
+}
+
+func (w *Worker) applyPriorityWrites(ctx context.Context, client *host.Client, snapshot Snapshot) {
+	if !w.writePriorityEnabled() {
+		return
+	}
+	files, errList := client.ListAuthFiles(ctx)
+	if errList != nil {
+		return
+	}
+	w.mu.Lock()
+	cfg := w.ranking
+	w.mu.Unlock()
+	if cfg.MaxAge() == 0 {
+		cfg = router.DefaultConfig()
+	}
+	quota := snapshot.Quota()
+	now := snapshot.At
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	byProvider := make(map[string][]pluginapi.SchedulerAuthCandidate)
+	fileByID := make(map[string]host.AuthFile, len(files))
+	for _, file := range files {
+		if file.ID == "" || file.Disabled {
+			continue
+		}
+		provider := strings.ToLower(strings.TrimSpace(file.Provider))
+		if provider == "" {
+			provider = strings.ToLower(strings.TrimSpace(file.Type))
+		}
+		if provider == "" {
+			continue
+		}
+		fileByID[file.ID] = file
+		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{
+			ID:       file.ID,
+			Provider: provider,
+			Priority: file.Priority,
+		})
+	}
+	for provider, candidates := range byProvider {
+		model := "model"
+		if provider == "antigravity" {
+			model = "gemini"
+		}
+		rows := router.RankCandidates(candidates, quota, provider, model, now, cfg)
+		for _, write := range router.AssignPriorityWrites(rows) {
+			file, okFile := fileByID[write.AuthID]
+			if !okFile {
+				continue
+			}
+			_ = client.PatchPriority(ctx, file, write.To)
+		}
+	}
+}
+
+func (w *Worker) writePriorityEnabled() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writePriorities
 }
 
 func (w *Worker) publish(snapshot Snapshot) Snapshot {
