@@ -1,3 +1,13 @@
+## v0.3.1
+
+- Replace example model previews with configured `preview_models` and routes observed in scheduler picks. Preview the daily Antigravity route with `provider: antigravity`, `model: gemini-3.8-flash-high`.
+- Use distinct stable hashed account labels across quota, pins and previews; retain full IDs only in private host state and existing logs.
+- Add 30-second cached display refresh, Refresh display, and a management-key-protected Probe now action. Keep the key in page memory. Contain wide tables on mobile.
+- Separate registration from observed scheduler decisions and count successful quota readings accurately. Apply runtime disabled/unavailable/cooldown eligibility and preserve Codex websocket delegation in previews.
+- Correct Antigravity quota request identity, project resolution, endpoint fallback and deterministic window parsing. Report safe provider failure statuses.
+- Retain last successful quota evidence with its original age during failed probes, expire it through `max_age`, and remove disabled/deleted credentials from probe snapshots.
+- Add deterministic five-hour exhaustion/reset and weekly rollover regressions. Use configured `max_age` for quota-file overlays.
+
 ## v0.3.0 (karlorz fork v1)
 
 - **In-process quota probes.** The plugin now reads Antigravity, Claude, Codex and xAI quota itself, on a background `probe_interval` (default `5m`), through the host's HTTP transport. Picks read the in-memory snapshot and never call a provider. Antigravity is probed once per model group (`gemini` and `claude_gpt`); Claude, Codex and xAI have a single metered pool each.

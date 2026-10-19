@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // RedactedValue replaces sensitive header values and JSON fields in recorded or logged text.
@@ -28,10 +29,15 @@ type Header map[string][]string
 // AuthFile is the subset of host.auth.list the probes read. ID is the credential ID the host
 // also hands to scheduler.pick as SchedulerAuthCandidate.ID, so quota readings key on it.
 type AuthFile struct {
-	ID        string `json:"id"`
-	AuthIndex string `json:"auth_index"`
-	Type      string `json:"type,omitempty"`
-	Provider  string `json:"provider,omitempty"`
+	ID             string    `json:"id"`
+	AuthIndex      string    `json:"auth_index"`
+	Type           string    `json:"type,omitempty"`
+	Provider       string    `json:"provider,omitempty"`
+	ProjectID      string    `json:"project_id,omitempty"`
+	BaseURL        string    `json:"base_url,omitempty"`
+	Disabled       bool      `json:"disabled,omitempty"`
+	Unavailable    bool      `json:"unavailable,omitempty"`
+	NextRetryAfter time.Time `json:"next_retry_after,omitempty"`
 }
 
 // AuthDocument is the host.auth.get view of one credential's physical JSON.

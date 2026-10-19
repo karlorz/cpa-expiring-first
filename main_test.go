@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -132,5 +134,54 @@ func TestCodexWebsocketPoolsStayUnhandled(t *testing.T) {
 	})
 	if resp := decodePick(t, req); resp.Handled {
 		t.Fatalf("pick = %+v, want unhandled for a websocket-capable Codex pool", resp)
+	}
+}
+
+func TestPreviewCandidatesRespectRuntimeEligibility(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{
+		{ID: "ready", Provider: "antigravity", Priority: 42},
+		{ID: "disabled", Provider: "antigravity", Disabled: true},
+		{ID: "unavailable", Provider: "antigravity", Unavailable: true},
+		{ID: "cooldown", Provider: "antigravity", NextRetryAfter: testNow.Add(time.Hour)},
+		{ID: "ws", Type: "codex", Websockets: true},
+	}
+	got := previewCandidates(files, testNow)
+	if len(got["antigravity"]) != 1 || got["antigravity"][0].ID != "ready" || got["antigravity"][0].Priority != 42 {
+		t.Fatalf("eligible antigravity candidates = %+v", got["antigravity"])
+	}
+	if len(got["codex"]) != 1 || got["codex"][0].Attributes["websockets"] != "true" {
+		t.Fatalf("codex candidates = %+v", got["codex"])
+	}
+}
+
+func TestQuotaOverlayUsesReconfiguredMaxAge(t *testing.T) {
+	const authID = "overlay-account"
+	now := time.Now()
+	path := t.TempDir() + "/quota.json"
+	body := fmt.Sprintf(`{"schema":%q,"accounts":[{"auth_id":%q,"updated_at":%q,"windows":[{"window_minutes":10080,"used_percent":20}]}]}`, router.QuotaSchema, authID, now.Add(-10*time.Minute).UTC().Format(time.RFC3339))
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { attachQuotaFile("", router.DefaultMaxAge) })
+	attachQuotaFile(path, 5*time.Minute)
+	if _, ok := scheduler.QuotaSnapshot()[authID]; ok {
+		t.Fatal("overlay included expired reading")
+	}
+	attachQuotaFile(path, 20*time.Minute)
+	if _, ok := scheduler.QuotaSnapshot()[authID]; !ok {
+		t.Fatal("reconfigured overlay omitted fresh reading")
+	}
+}
+
+func TestConfiguredLivePoolRejectsUnavailableCredentials(t *testing.T) {
+	cfg, err := router.ParseConfig([]byte("live_auth_ids: [live-a, live-b, live-c]\nfail_closed: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachLive(cfg)
+	t.Cleanup(func() { liveSelector.Configure(live.Config{}) })
+	resp := decodePick(t, codexPick(live.Model, pluginapi.SchedulerAuthCandidate{ID: "ordinary"}))
+	if !resp.Handled || !resp.Reject || resp.RejectCode != live.RejectCodeLiveUnavailable {
+		t.Fatalf("pick = %+v, want fail-closed rejection", resp)
 	}
 }

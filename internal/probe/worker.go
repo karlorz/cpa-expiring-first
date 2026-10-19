@@ -8,6 +8,7 @@ package probe
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,7 +194,7 @@ func (w *Worker) Refresh(ctx context.Context, callbacks host.Callbacks) Snapshot
 		// replacing them with nothing, which would send every route back to sticky order.
 		return w.Snapshot()
 	}
-	accounts := w.probeAll(ctx, client, credentials)
+	accounts := retainEvidence(w.Snapshot().Accounts, w.probeAll(ctx, client, credentials))
 	return w.publish(Snapshot{At: time.Now().UTC(), Accounts: accounts})
 }
 
@@ -342,4 +343,36 @@ type fixedClock struct {
 
 func (c fixedClock) Now() time.Time {
 	return c.now.UTC()
+}
+
+// retainEvidence preserves original observation times when a provider cannot refresh a reading.
+func retainEvidence(previous, current []Account) []Account {
+	old := make(map[string]Account, len(previous))
+	for _, account := range previous {
+		old[account.AuthID] = account
+	}
+	for index := range current {
+		account := &current[index]
+		prior, ok := old[account.AuthID]
+		if !ok || account.Error == "" || len(prior.Windows) == 0 {
+			continue
+		}
+		if len(account.Windows) == 0 {
+			account.Windows = prior.Windows
+			account.ObservedAt = prior.ObservedAt
+			continue
+		}
+		// Partial group success keeps the oldest evidence timestamp for the combined account.
+		refreshedGroups := make(map[string]bool)
+		for _, fresh := range account.Windows {
+			refreshedGroups[strings.Join(fresh.Models, ",")] = true
+		}
+		for _, window := range prior.Windows {
+			if !refreshedGroups[strings.Join(window.Models, ",")] {
+				account.Windows = append(account.Windows, window)
+				account.ObservedAt = prior.ObservedAt
+			}
+		}
+	}
+	return current
 }

@@ -63,6 +63,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -245,7 +246,7 @@ func configure(raw []byte) error {
 	}
 	scheduler.Configure(cfg)
 	attachPinsFile(cfg.PinsFile())
-	attachQuotaFile(cfg.QuotaFile())
+	attachQuotaFile(cfg.QuotaFile(), cfg.MaxAge())
 	attachLive(cfg)
 	probeWorker.SetInterval(cfg.ProbeInterval())
 	probeWorker.Start(hostCallbacks{})
@@ -264,7 +265,8 @@ func attachLive(cfg router.Config) {
 var (
 	quotaFileMu sync.Mutex
 	// quotaFilePath is the quota file currently attached to the scheduler; "" when none.
-	quotaFilePath string
+	quotaFilePath   string
+	quotaFileMaxAge time.Duration
 	// quotaAttached records that the overlay has been given to the scheduler at least once, so
 	// the default empty path still attaches it on the first configure.
 	quotaAttached bool
@@ -272,13 +274,14 @@ var (
 
 // attachQuotaFile makes the file overlay use path, or keeps the probe readings alone when path
 // is empty. Reattaching the same path keeps the cached readings.
-func attachQuotaFile(path string) {
+func attachQuotaFile(path string, maxAge time.Duration) {
 	quotaFileMu.Lock()
 	defer quotaFileMu.Unlock()
-	if quotaAttached && path == quotaFilePath {
+	if quotaAttached && path == quotaFilePath && maxAge == quotaFileMaxAge {
 		return
 	}
 	quotaFilePath = path
+	quotaFileMaxAge = maxAge
 	quotaAttached = true
 	var file router.QuotaSource
 	if path != "" {
@@ -286,7 +289,7 @@ func attachQuotaFile(path string) {
 			logWarn(fmt.Sprintf("expiring-first: quota file: %v", err))
 		})
 	}
-	quotaOverlay := router.NewOverlayQuota(memoryQuota, file, router.DefaultMaxAge)
+	quotaOverlay := router.NewOverlayQuota(memoryQuota, file, maxAge)
 	scheduler.UseQuota(quotaOverlay)
 }
 
@@ -587,6 +590,11 @@ func pluginRegistration() registration {
 					Description: "How often the in-process quota probes refresh every credential's readings (Go duration, default 5m).",
 				},
 				{
+					Name:        "preview_models",
+					Type:        pluginapi.ConfigFieldTypeArray,
+					Description: "Pinned preview routes as provider/model objects. Other preview routes come from observed scheduler picks.",
+				},
+				{
 					Name:        "live_auth_ids",
 					Type:        pluginapi.ConfigFieldTypeArray,
 					Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Empty leaves Live requests to the host's built-in scheduler.",
@@ -723,12 +731,29 @@ func (consoleSources) PickStats() map[string]router.PickStat { return scheduler.
 // Candidates lists the credentials the host offers, grouped by the provider key a pick would
 // route on. One listing serves every provider the page previews.
 func (consoleSources) Candidates(ctx context.Context) (map[string][]pluginapi.SchedulerAuthCandidate, error) {
-	files, errList := (hostCallbacks{}).ListAuthFiles(ctx)
-	if errList != nil {
-		return nil, errList
+	raw, errCall := callHost(pluginabi.MethodHostAuthList, []byte("{}"))
+	if errCall != nil {
+		return nil, errCall
 	}
+	result, errDecode := decodeHostResult(raw)
+	if errDecode != nil {
+		return nil, errDecode
+	}
+	var list struct {
+		Files []pluginapi.HostAuthFileEntry `json:"files"`
+	}
+	if errUnmarshal := json.Unmarshal(result, &list); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode preview candidates: %w", errUnmarshal)
+	}
+	return previewCandidates(list.Files, time.Now()), nil
+}
+
+func previewCandidates(files []pluginapi.HostAuthFileEntry, now time.Time) map[string][]pluginapi.SchedulerAuthCandidate {
 	byProvider := make(map[string][]pluginapi.SchedulerAuthCandidate)
 	for _, file := range files {
+		if file.ID == "" || file.Disabled || file.Unavailable || file.NextRetryAfter.After(now) {
+			continue
+		}
 		provider := strings.ToLower(strings.TrimSpace(file.Provider))
 		if provider == "" {
 			provider = strings.ToLower(strings.TrimSpace(file.Type))
@@ -736,9 +761,12 @@ func (consoleSources) Candidates(ctx context.Context) (map[string][]pluginapi.Sc
 		if provider == "" {
 			continue
 		}
-		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{ID: file.ID, Provider: provider})
+		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{
+			ID: file.ID, Provider: provider, Priority: file.Priority, Status: file.Status,
+			Attributes: map[string]string{"websockets": strconv.FormatBool(file.Websockets)},
+		})
 	}
-	return byProvider, nil
+	return byProvider
 }
 
 func (consoleSources) Preview(candidates []pluginapi.SchedulerAuthCandidate, provider, model string, now time.Time) (string, bool) {
@@ -750,12 +778,15 @@ func (consoleSources) Config() router.Config { return scheduler.Configuration() 
 func (consoleSources) Live() live.Config { return liveSelector.Config() }
 
 func (consoleSources) Refresh(ctx context.Context) error {
-	probeWorker.Refresh(ctx, hostCallbacks{})
+	before := probeWorker.Snapshot().At
+	after := probeWorker.Refresh(ctx, hostCallbacks{})
+	if after.At.Equal(before) {
+		return errors.New("probe could not publish a new snapshot; a cycle is running or credential listing failed")
+	}
 	return nil
 }
 
-// Enabled reports that the plugin is registered and routing; the provider scope is shown
-// separately on the page.
+// Enabled reports registration; handled pick counters provide routing evidence.
 func (consoleSources) Enabled() bool { return true }
 
 func (consoleSources) Version() string { return version }

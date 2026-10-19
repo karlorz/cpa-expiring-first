@@ -382,7 +382,7 @@ func (s *Scheduler) Preview(candidates []pluginapi.SchedulerAuthCandidate, provi
 	s.mu.Lock()
 	cfg, source := s.cfg, s.quota
 	s.mu.Unlock()
-	if source == nil || !cfg.Applies(provider) || len(candidates) == 0 {
+	if source == nil || !cfg.Applies(provider) || len(candidates) == 0 || (normalizeProvider(provider) == "codex" && anyWebsocketCandidate(candidates)) {
 		return "", false
 	}
 	quota := source.Load()

@@ -12,6 +12,7 @@ import (
 	"github.com/karlorz/cpa-expiring-first/internal/probe/host"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/reading"
 	"github.com/karlorz/cpa-expiring-first/internal/router"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type fakeHost struct {
@@ -191,5 +192,75 @@ func TestSnapshotQuotaSkipsAccountsWithoutWindows(t *testing.T) {
 	}
 	if _, okGood := quota["good"]; !okGood {
 		t.Fatalf("quota = %+v, want the good account", quota)
+	}
+}
+
+func TestFailedProbeRetainsOriginalAgeAndExpires(t *testing.T) {
+	now := time.Now().UTC()
+	previous := []Account{{AuthID: "a", ObservedAt: now.Add(-29 * time.Minute), Windows: []reading.Window{{Minutes: 10080, UsedPercent: 20, ResetsAt: now.Add(time.Hour)}}}}
+	current := retainEvidence(previous, []Account{{AuthID: "a", ObservedAt: now, Error: "quota status 403"}})
+	if len(current[0].Windows) != 1 || !current[0].ObservedAt.Equal(previous[0].ObservedAt) || current[0].Error == "" {
+		t.Fatalf("retention=%+v", current)
+	}
+	s := router.NewScheduler(router.DefaultConfig(), nil)
+	memory := router.NewMemoryQuota()
+	memory.Replace(Snapshot{Accounts: current}.Quota())
+	s.UseQuota(memory)
+	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "a"}}
+	if _, ok := s.Preview(candidates, "antigravity", "gemini-3.8-flash-high", now); !ok {
+		t.Fatal("retained fresh evidence missing")
+	}
+	if _, ok := s.Preview(candidates, "antigravity", "gemini-3.8-flash-high", now.Add(2*time.Minute)); ok {
+		t.Fatal("retained evidence age was renewed")
+	}
+}
+func TestDisabledAndDeletedCredentialsLoseProbeEvidence(t *testing.T) {
+	fake := &fakeHost{files: []host.AuthFile{{ID: "disabled", AuthIndex: "idx", Provider: "codex", Disabled: true}}}
+	memory := router.NewMemoryQuota()
+	worker := NewWorker(memory)
+	worker.publish(Snapshot{Accounts: []Account{{AuthID: "deleted", ObservedAt: time.Now(), Windows: []reading.Window{{Minutes: 10080}}}}})
+	snapshot := worker.Refresh(context.Background(), fake)
+	if len(snapshot.Accounts) != 0 || len(memory.Load()) != 0 {
+		t.Fatalf("removed credentials remain: %+v", snapshot)
+	}
+}
+func TestRuntimeProjectOverridesPhysicalProject(t *testing.T) {
+	fake := &fakeHost{files: []host.AuthFile{{ID: "a", AuthIndex: "idx", Provider: "antigravity", ProjectID: "runtime-project"}}, auth: map[string]json.RawMessage{"idx": json.RawMessage(`{"access_token":"token","project_id":"old-project"}`)}}
+	credentials, err := listCredentials(context.Background(), host.NewClient(fake))
+	if err != nil || len(credentials) != 1 || credentials[0].material.ProjectID != "runtime-project" {
+		t.Fatalf("credentials=%+v err=%v", credentials, err)
+	}
+	material := parseAuthMaterial(json.RawMessage(`{"token":{"access_token":"token"},"metadata":{"projectId":"nested-project"}}`))
+	if material.AccessToken != "token" || material.ProjectID != "nested-project" {
+		t.Fatal("nested credential fields missing")
+	}
+}
+
+func TestPartialGroupFailureRetainsBothOriginalWindows(t *testing.T) {
+	old := time.Date(2026, 10, 19, 11, 0, 0, 0, time.UTC)
+	prior := []Account{{AuthID: "a", ObservedAt: old, Windows: []reading.Window{
+		{Minutes: 10080, Models: []string{"gemini"}}, {Minutes: 300, Models: []string{"gemini"}},
+	}}}
+	fresh := []Account{{AuthID: "a", ObservedAt: old.Add(time.Minute), Error: "gemini failed", Windows: []reading.Window{{Minutes: 10080, Models: []string{"claude", "gpt", "openai"}}}}}
+	result := retainEvidence(prior, fresh)
+	if len(result[0].Windows) != 3 || !result[0].ObservedAt.Equal(old) {
+		t.Fatalf("partial retention=%+v", result)
+	}
+}
+
+func TestRefreshFailureRetainsEvidenceInPublishedMemory(t *testing.T) {
+	fake := &fakeHost{files: []host.AuthFile{{ID: "a", AuthIndex: "idx", Provider: "codex"}}, auth: map[string]json.RawMessage{"idx": json.RawMessage(`{"access_token":"token"}`)}, httpDo: func(host.HTTPRequest) (host.HTTPResponse, error) {
+		return host.HTTPResponse{StatusCode: 200, Body: []byte(`{"plan_type":"plus","rate_limit":{"secondary_window":{"used_percent":20,"reset_at":"2026-10-24T04:25:56Z","limit_window_seconds":604800}}}`)}, nil
+	}}
+	memory := router.NewMemoryQuota()
+	worker := NewWorker(memory)
+	first := worker.Refresh(context.Background(), fake)
+	fake.httpDo = func(host.HTTPRequest) (host.HTTPResponse, error) { return host.HTTPResponse{}, errors.New("offline") }
+	second := worker.Refresh(context.Background(), fake)
+	if len(second.Accounts) != 1 || second.Accounts[0].Error == "" || !second.Accounts[0].ObservedAt.Equal(first.Accounts[0].ObservedAt) {
+		t.Fatalf("failed refresh=%+v", second)
+	}
+	if len(memory.Load()["a"].Windows) != 1 || !memory.Load()["a"].UpdatedAt.Equal(first.Accounts[0].ObservedAt) {
+		t.Fatal("published evidence missing or re-aged")
 	}
 }

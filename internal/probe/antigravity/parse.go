@@ -88,12 +88,8 @@ func ParseAvailableModels(raw []byte, observedAt time.Time, group ModelGroup) Pr
 		result.LongWindowRemaining = int64Ptr(weekly.remaining)
 		quotaWindows = append(quotaWindows, reading.QuotaWindow{Duration: 7 * 24 * time.Hour, Remaining: weekly.remaining, ResetAt: *weekly.resetAt})
 	}
-	if len(quotaWindows) == 0 && selected.resetAt != nil {
-		duration := 7 * 24 * time.Hour
-		if selected.window == WindowFiveHour {
-			duration = 5 * time.Hour
-		}
-		quotaWindows = append(quotaWindows, reading.QuotaWindow{Duration: duration, Remaining: selected.remaining, ResetAt: *selected.resetAt})
+	if len(quotaWindows) == 0 {
+		return failedResult(observedAt, group, "target model group has no typed quota windows")
 	}
 	result.Windows = quotaWindows
 	return result
@@ -121,7 +117,7 @@ func collectGroupWindows(response availableModelsResponse, group ModelGroup) []c
 		if !modelBelongsToGroup(bucket.ModelID, "", group) {
 			continue
 		}
-		if window, okWindow := quotaFieldsToWindow(bucket.RemainingFraction, bucket.ResetTime, WindowUnknown); okWindow {
+		if window, okWindow := quotaFieldsToWindow(bucket.RemainingFraction, bucket.ResetTime, classifyWindow(bucket.Window)); okWindow {
 			windows = append(windows, window)
 		}
 	}
@@ -173,12 +169,17 @@ func pickEffectiveWindow(windows []candidateWindow) (candidateWindow, bool) {
 }
 
 func firstWindow(windows []candidateWindow, windowType WindowType) (candidateWindow, bool) {
+	var best candidateWindow
+	found := false
 	for _, window := range windows {
-		if window.window == windowType {
-			return window, true
+		if window.window != windowType {
+			continue
+		}
+		if !found || window.remaining < best.remaining || (window.remaining == best.remaining && window.resetAt.Before(*best.resetAt)) {
+			best, found = window, true
 		}
 	}
-	return candidateWindow{}, false
+	return best, found
 }
 
 func quotaFieldsToWindow(rawRemaining any, rawReset any, windowType WindowType) (candidateWindow, bool) {
@@ -301,7 +302,7 @@ func remainingPercent(raw any) (int64, bool) {
 	if value <= 0 {
 		return 0, true
 	}
-	return int64(math.Ceil(value)), true
+	return int64(math.Min(100, math.Ceil(value))), true
 }
 
 func failedResult(observedAt time.Time, group ModelGroup, message string) ProbeResult {

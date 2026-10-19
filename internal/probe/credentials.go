@@ -8,7 +8,7 @@ import (
 	"github.com/karlorz/cpa-expiring-first/internal/probe/host"
 )
 
-// authMaterial is the non-secret slice of a credential's JSON that a probe needs.
+// authMaterial contains the credential fields needed only during a probe.
 type authMaterial struct {
 	AccessToken      string
 	AccountID        string
@@ -24,29 +24,44 @@ type authMaterial struct {
 // probe call itself.
 func parseAuthMaterial(raw json.RawMessage) authMaterial {
 	var document struct {
-		AccessToken      string `json:"access_token"`
-		SessionKey       string `json:"session_key"`
-		Token            string `json:"token"`
-		AccountID        string `json:"account_id"`
-		ProjectID        string `json:"project_id"`
-		QuotaProjectID   string `json:"quota_project_id"`
-		Project          string `json:"project"`
-		BaseURL          string `json:"base_url"`
-		AuthKind         string `json:"auth_kind"`
-		Sub              string `json:"sub"`
-		Subject          string `json:"subject"`
-		UserID           string `json:"user_id"`
-		OrganizationUUID string `json:"organization_uuid"`
-		OrgUUID          string `json:"org_uuid"`
-		OrganizationID   string `json:"organization_id"`
-		OrgID            string `json:"org_id"`
-		Organization     string `json:"organization"`
+		AccessToken      string          `json:"access_token"`
+		SessionKey       string          `json:"session_key"`
+		Token            json.RawMessage `json:"token"`
+		AccountID        string          `json:"account_id"`
+		ProjectID        string          `json:"project_id"`
+		QuotaProjectID   string          `json:"quota_project_id"`
+		Project          string          `json:"project"`
+		BaseURL          string          `json:"base_url"`
+		AuthKind         string          `json:"auth_kind"`
+		Sub              string          `json:"sub"`
+		Subject          string          `json:"subject"`
+		UserID           string          `json:"user_id"`
+		OrganizationUUID string          `json:"organization_uuid"`
+		OrgUUID          string          `json:"org_uuid"`
+		OrganizationID   string          `json:"organization_id"`
+		OrgID            string          `json:"org_id"`
+		Organization     string          `json:"organization"`
 	}
 	if errUnmarshal := json.Unmarshal(raw, &document); errUnmarshal != nil {
 		return authMaterial{}
 	}
+	var nested map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &nested)
+	for _, key := range []string{"metadata", "attributes", "token"} {
+		value := nested[key]
+		if len(value) == 0 || value[0] != '{' {
+			continue
+		}
+		var fields map[string]any
+		if json.Unmarshal(value, &fields) != nil {
+			continue
+		}
+		get := func(key string) string { value, _ := fields[key].(string); return value }
+		document.AccessToken = firstNonEmpty(document.AccessToken, get("access_token"))
+		document.ProjectID = firstNonEmpty(document.ProjectID, get("project_id"), get("projectId"), get("gemini_virtual_project"))
+	}
 	return authMaterial{
-		AccessToken:      firstNonEmpty(document.AccessToken, document.SessionKey, document.Token),
+		AccessToken:      firstNonEmpty(document.AccessToken, document.SessionKey, tokenString(document.Token)),
 		AccountID:        strings.TrimSpace(document.AccountID),
 		ProjectID:        firstNonEmpty(document.ProjectID, document.QuotaProjectID, document.Project),
 		BaseURL:          strings.TrimSpace(document.BaseURL),
@@ -85,7 +100,7 @@ func listCredentials(ctx context.Context, client *host.Client) ([]credential, er
 		if provider == "" {
 			provider = normalizeProvider(file.Type)
 		}
-		if !supportedProvider(provider) {
+		if !supportedProvider(provider) || file.Disabled || strings.TrimSpace(file.ID) == "" {
 			continue
 		}
 		item := credential{
@@ -98,6 +113,8 @@ func listCredentials(ctx context.Context, client *host.Client) ([]credential, er
 				item.material = parseAuthMaterial(raw)
 			}
 		}
+		item.material.ProjectID = firstNonEmpty(file.ProjectID, item.material.ProjectID)
+		item.material.BaseURL = firstNonEmpty(file.BaseURL, item.material.BaseURL)
 		credentials = append(credentials, item)
 	}
 	return credentials, nil
@@ -126,4 +143,10 @@ func supportedProvider(provider string) bool {
 	default:
 		return false
 	}
+}
+
+func tokenString(raw json.RawMessage) string {
+	var token string
+	_ = json.Unmarshal(raw, &token)
+	return token
 }

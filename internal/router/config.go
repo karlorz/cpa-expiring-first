@@ -22,6 +22,14 @@ const DefaultMaxAge = 30 * time.Minute
 // DefaultProbeInterval is how often the in-process probes refresh every credential's readings.
 const DefaultProbeInterval = 5 * time.Minute
 
+// PreviewModel is one provider+model route the console previews the next pick for. The host
+// configures these in preview_models; nothing else invents a route, so the page never shows a
+// provider or model the deployment does not use.
+type PreviewModel struct {
+	Provider string `yaml:"provider" json:"provider"`
+	Model    string `yaml:"model" json:"model"`
+}
+
 // Config is a validated plugin configuration. Build it with ParseConfig.
 type Config struct {
 	// providers restricts routing to these provider keys; nil means every provider.
@@ -42,6 +50,8 @@ type Config struct {
 	liveAuthIDs []string
 	// failClosed rejects a Live request when no allowlisted credential is available.
 	failClosed bool
+	// previewModels lists the provider+model routes the console previews next picks for.
+	previewModels []PreviewModel
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
@@ -98,6 +108,17 @@ func (c Config) FailClosed() bool {
 	return c.failClosed
 }
 
+// PreviewModels reports the provider+model routes the console previews, in configuration order.
+// DefaultConfig leaves it empty: the deployment supplies its own routes.
+func (c Config) PreviewModels() []PreviewModel {
+	if len(c.previewModels) == 0 {
+		return nil
+	}
+	models := make([]PreviewModel, len(c.previewModels))
+	copy(models, c.previewModels)
+	return models
+}
+
 // Applies reports whether the plugin routes the given provider key.
 func (c Config) Applies(provider string) bool {
 	if c.providers == nil {
@@ -121,16 +142,17 @@ func (c Config) Providers() []string {
 }
 
 type rawConfig struct {
-	Providers      []string `yaml:"providers"`
-	SwitchAfter    string   `yaml:"switch_after"`
-	PinsFile       string   `yaml:"pins_file"`
-	QuotaFile      string   `yaml:"quota_file"`
-	MaxAge         string   `yaml:"max_age"`
-	ReservePercent *float64 `yaml:"reserve_percent"`
-	ClearCooldowns *bool    `yaml:"clear_stale_cooldowns"`
-	ProbeInterval  string   `yaml:"probe_interval"`
-	LiveAuthIDs    []string `yaml:"live_auth_ids"`
-	FailClosed     *bool    `yaml:"fail_closed"`
+	Providers      []string       `yaml:"providers"`
+	SwitchAfter    string         `yaml:"switch_after"`
+	PinsFile       string         `yaml:"pins_file"`
+	QuotaFile      string         `yaml:"quota_file"`
+	MaxAge         string         `yaml:"max_age"`
+	ReservePercent *float64       `yaml:"reserve_percent"`
+	ClearCooldowns *bool          `yaml:"clear_stale_cooldowns"`
+	ProbeInterval  string         `yaml:"probe_interval"`
+	LiveAuthIDs    []string       `yaml:"live_auth_ids"`
+	FailClosed     *bool          `yaml:"fail_closed"`
+	PreviewModels  []PreviewModel `yaml:"preview_models"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -196,6 +218,21 @@ func ParseConfig(raw []byte) (Config, error) {
 			cfg.providers = make(map[string]struct{}, len(parsed.Providers))
 		}
 		cfg.providers[key] = struct{}{}
+	}
+
+	seenPreview := make(map[PreviewModel]struct{}, len(parsed.PreviewModels))
+	for index, preview := range parsed.PreviewModels {
+		provider := normalizeProvider(preview.Provider)
+		model := strings.TrimSpace(preview.Model)
+		if provider == "" || model == "" {
+			return Config{}, fmt.Errorf("preview_models[%d] needs both a provider and a model", index)
+		}
+		entry := PreviewModel{Provider: provider, Model: model}
+		if _, okSeen := seenPreview[entry]; okSeen {
+			continue
+		}
+		seenPreview[entry] = struct{}{}
+		cfg.previewModels = append(cfg.previewModels, entry)
 	}
 	return cfg, nil
 }

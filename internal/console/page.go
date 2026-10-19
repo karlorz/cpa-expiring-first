@@ -1,9 +1,11 @@
 package console
 
 // StatusHTML is the self-contained status page served at
-// /v0/resource/plugins/expiring-first/status. The payload is embedded server-side, so the page
-// issues no further requests and needs no management key. Credential IDs are redacted by the
-// server before they reach the page.
+// /v0/resource/plugins/expiring-first/status. The first payload is embedded server-side, so the
+// page renders immediately and issues no request to start. It then reloads the cached snapshot
+// from /v0/resource/plugins/expiring-first/data every 30 seconds while the tab is visible; that
+// route only reads state. The Probe now button posts to the host's authenticated management
+// route with a key the user types into the page, kept in memory only.
 const StatusHTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -12,38 +14,40 @@ const StatusHTML = `<!doctype html>
 <title>Expiring First</title>
 <style>
   :root {
-    --bg: #f8fafc; --surface: #ffffff; --surface-subtle: #f1f5f9; --border: #e2e8f0;
-    --text: #0f172a; --text-muted: #64748b; --primary: #2563eb;
-    --success: #16a34a; --success-bg: #dcfce7; --warning: #d97706; --warning-bg: #fef3c7;
-    --danger: #dc2626; --danger-bg: #fee2e2; --radius: 8px;
+    --bg: #f8fafc; --surface: #ffffff; --surface-subtle: #f1f5f9; --border: #cbd5e1;
+    --text: #0f172a; --text-muted: #475569; --primary: #1d4ed8;
+    --success: #15803d; --success-bg: #dcfce7; --warning: #b45309; --warning-bg: #fef3c7;
+    --danger: #b91c1c; --danger-bg: #fee2e2; --radius: 8px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0b0f19; --surface: #111827; --surface-subtle: #1f2937; --border: #374151;
-      --text: #f9fafb; --text-muted: #9ca3af; --primary: #3b82f6;
-      --success: #22c55e; --success-bg: #052e16; --warning: #f59e0b; --warning-bg: #451a03;
-      --danger: #ef4444; --danger-bg: #450a0a;
+      --bg: #0b0f19; --surface: #111827; --surface-subtle: #1f2937; --border: #4b5563;
+      --text: #f9fafb; --text-muted: #cbd5e1; --primary: #60a5fa;
+      --success: #4ade80; --success-bg: #052e16; --warning: #fbbf24; --warning-bg: #451a03;
+      --danger: #f87171; --danger-bg: #450a0a;
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { max-width: 100%; overflow-x: hidden; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--bg); color: var(--text); line-height: 1.5; padding: 1.5rem; }
   .container { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.25rem; }
   header { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline; justify-content: space-between; }
   h1 { font-size: 1.4rem; }
-  h2 { font-size: 1rem; margin-bottom: 0.5rem; }
-  .muted { color: var(--text-muted); font-size: 0.85rem; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; }
-  .grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-  .metric { background: var(--surface-subtle); border-radius: var(--radius); padding: 0.6rem 0.75rem; }
-  .metric .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
-  .metric .value { font-size: 1.05rem; font-weight: 600; font-family: var(--mono); }
+  h2 { font-size: 1rem; margin-bottom: 0.35rem; }
+  .muted { color: var(--text-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; min-width: 0; }
+  .grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  .metric { background: var(--surface-subtle); border-radius: var(--radius); padding: 0.6rem 0.75rem; min-width: 0; }
+  .metric .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); overflow-wrap: anywhere; }
+  .metric .value { font-size: 1.05rem; font-weight: 600; font-family: var(--mono); overflow-wrap: anywhere; }
+  .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
   th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
   tr:last-child td { border-bottom: none; }
-  code { font-family: var(--mono); font-size: 0.8rem; }
+  code { font-family: var(--mono); font-size: 0.8rem; overflow-wrap: anywhere; }
   .pill { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
   .pill.ok { background: var(--success-bg); color: var(--success); }
   .pill.warn { background: var(--warning-bg); color: var(--warning); }
@@ -54,6 +58,23 @@ const StatusHTML = `<!doctype html>
   .bar span.warn { background: var(--warning); }
   .bar span.bad { background: var(--danger); }
   .empty { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+  button, input { font: inherit; }
+  button { background: var(--primary); color: #ffffff; border: 1px solid transparent; border-radius: var(--radius);
+    padding: 0.4rem 0.8rem; font-weight: 600; cursor: pointer; }
+  button.secondary { background: var(--surface-subtle); color: var(--text); border-color: var(--border); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  input[type="password"] { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.4rem 0.5rem;
+    background: var(--surface); color: var(--text); min-width: 0; max-width: 100%; flex: 1 1 12rem; }
+  .banner { border-radius: var(--radius); padding: 0.55rem 0.75rem; font-size: 0.85rem; border: 1px solid transparent; overflow-wrap: anywhere; }
+  .banner.hidden { display: none; }
+  .banner.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+  .banner.warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning); }
+  .banner.ok { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+  @media (max-width: 480px) {
+    body { padding: 0.75rem; }
+    h1 { font-size: 1.2rem; }
+  }
 </style>
 </head>
 <body>
@@ -66,13 +87,29 @@ const StatusHTML = `<!doctype html>
     <div class="muted" id="generated"></div>
   </header>
 
+  <div id="banner" class="banner hidden" role="status" aria-live="polite"></div>
+
   <section class="card">
-    <h2>Status</h2>
+    <h2>Plugin state</h2>
     <div class="grid" id="metrics"></div>
+    <div class="muted" id="serving-note" style="margin-top:0.6rem"></div>
+  </section>
+
+  <section class="card">
+    <h2>Probe controls</h2>
+    <p class="muted">Reloading the page and the automatic refresh both read the cached snapshot; neither starts a probe. Running a probe needs the host management key, which stays in this page's memory only.</p>
+    <div class="toolbar" style="margin-top:0.6rem">
+      <label class="muted" for="management-key">Management key</label>
+      <input id="management-key" type="password" autocomplete="off" spellcheck="false" placeholder="host management key">
+      <button id="probe-now" type="button">Probe now</button>
+      <button id="reload-data" class="secondary" type="button">Refresh display</button>
+      <button id="forget-key" class="secondary" type="button">Forget key</button>
+    </div>
   </section>
 
   <section class="card">
     <h2>Pins</h2>
+    <p class="muted">A pin exists only for a provider and model route this plugin actually routed traffic for.</p>
     <div id="pins"></div>
   </section>
 
@@ -82,20 +119,39 @@ const StatusHTML = `<!doctype html>
   </section>
 
   <section class="card">
-    <h2>Next pick per provider</h2>
-    <div id="next-picks"></div>
+    <h2>Routing previews</h2>
+    <p class="muted">What the ranking would pick right now for the configured preview routes and for routes with observed traffic. Previews are cached quota estimates: the host's actual model choice and cooldown state can differ, and a preview is not a served request. These rows start no inference calls.</p>
+    <div id="previews"></div>
   </section>
 
   <section class="card">
     <h2>Picks served by this plugin</h2>
+    <p class="muted">Scheduler decisions handled by this plugin. Successful upstream responses can be verified in the host request logs.</p>
     <div id="pick-counts"></div>
   </section>
 </div>
 <script id="bootstrap" type="application/json">__EXPIRING_FIRST_BOOTSTRAP_JSON__</script>
 <script>
 (function () {
-  var data = {};
-  try { data = JSON.parse(document.getElementById('bootstrap').textContent); } catch (error) { data = {}; }
+  'use strict';
+  var DATA_URL = '/v0/resource/plugins/expiring-first/data';
+  var REFRESH_URL = '/v0/management/plugins/expiring-first/refresh';
+  var POLL_MS = 30000;
+
+  // The management key lives in this variable only: never in localStorage, the URL, or a log.
+  var managementKey = '';
+  var lastData = null;
+  var pollTimer = null;
+  var inFlight = false;
+  var lastError = '';
+
+  function readBootstrap() {
+    try {
+      return JSON.parse(document.getElementById('bootstrap').textContent);
+    } catch (error) {
+      return {};
+    }
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -106,6 +162,7 @@ const StatusHTML = `<!doctype html>
 
   function table(headers, rows) {
     if (!rows.length) { return el('div', 'empty', 'No data yet.'); }
+    var wrap = el('div', 'table-wrap');
     var node = el('table');
     var head = el('thead');
     var headRow = el('tr');
@@ -123,7 +180,8 @@ const StatusHTML = `<!doctype html>
       body.appendChild(row);
     });
     node.appendChild(body);
-    return node;
+    wrap.appendChild(node);
+    return wrap;
   }
 
   function remainingBar(percent) {
@@ -148,67 +206,188 @@ const StatusHTML = `<!doctype html>
     return window.reset_in ? window.reset_in : window.resets_at;
   }
 
-  var generated = data.generated_at ? new Date(data.generated_at).toLocaleString() : '';
-  document.getElementById('generated').textContent = generated ? 'Updated ' + generated : '';
+  function replace(node, children) {
+    node.textContent = '';
+    children.forEach(function (child) { node.appendChild(child); });
+  }
 
-  var metrics = document.getElementById('metrics');
-  metrics.appendChild(metric('Scheduler', data.enabled ? 'active' : 'disabled'));
-  metrics.appendChild(metric('Providers', (data.providers && data.providers.length) ? data.providers.join(', ') : 'all'));
-  metrics.appendChild(metric('Version', data.version || 'dev'));
-  metrics.appendChild(metric('Probe interval', data.probe_interval || '—'));
-  metrics.appendChild(metric('Last probe', data.last_probe_at ? new Date(data.last_probe_at).toLocaleString() : 'not yet'));
-  metrics.appendChild(metric('Live pool', data.live_enabled ? String(data.live_pool_size) + ' (' + (data.live_strategy || 'fill-first') + ')' : 'not configured'));
-  metrics.appendChild(metric('Pins', (data.pins || []).length));
-  metrics.appendChild(metric('Accounts with readings', (data.quota || []).length));
+  function setBanner(kind, message) {
+    var banner = document.getElementById('banner');
+    if (!message) { banner.className = 'banner hidden'; banner.textContent = ''; return; }
+    banner.className = 'banner ' + kind;
+    banner.textContent = message;
+  }
 
-  var pinRows = (data.pins || []).map(function (pin) {
-    return [
-      pin.provider, pin.model, pin.auth_id,
-      new Date(pin.pinned_at).toLocaleString(),
-      new Date(pin.last_picked_at).toLocaleString(),
-      pin.missing_since ? new Date(pin.missing_since).toLocaleString() : 'present'
+  function render(data) {
+    data = data || {};
+    lastData = data;
+
+    var generated = data.generated_at ? new Date(data.generated_at).toLocaleString() : '';
+    document.getElementById('generated').textContent = generated ? 'Updated ' + generated : '';
+
+    var readings = data.readings || 0;
+    var outcomes = data.probe_outcomes || 0;
+    var metrics = document.getElementById('metrics');
+    var metricNodes = [
+      metric('Plugin', data.registered ? 'registered' : 'not registered'),
+      metric('Providers', (data.providers && data.providers.length) ? data.providers.join(', ') : 'all'),
+      metric('Version', data.version || 'dev'),
+      metric('Probe interval', data.probe_interval || '—'),
+      metric('Last probe', data.last_probe_at ? new Date(data.last_probe_at).toLocaleString() : 'not yet'),
+      metric('Live pool', data.live_enabled ? String(data.live_pool_size) + ' (' + (data.live_strategy || 'fill-first') + ')' : 'not configured'),
+      metric('Pins', (data.pins || []).length),
+      metric('Readings / probe outcomes', readings + ' / ' + outcomes),
+      metric('Accounts probed OK', (data.accounts_succeeded || 0) + ' of ' + outcomes),
+      metric('Accounts failed', data.accounts_failed || 0),
+      metric('Picks handled', data.picks_handled || 0)
     ];
-  });
-  document.getElementById('pins').appendChild(table(['Provider', 'Model', 'Auth (redacted)', 'Pinned at', 'Last picked', 'Availability'], pinRows));
+    replace(metrics, metricNodes);
 
-  var quotaRows = [];
-  (data.quota || []).forEach(function (account) {
-    var label = el('div');
-    label.appendChild(el('code', null, account.auth || account.auth_id));
-    if (account.group) { label.appendChild(el('div', 'muted', 'group ' + account.group)); }
-    if (account.provider) { label.appendChild(el('div', 'muted', account.provider)); }
-    if (account.error) { label.appendChild(el('span', 'pill bad', account.error)); }
-    if (!account.windows || !account.windows.length) {
-      quotaRows.push([label, '—', '—', '—', account.probe_age || '—']);
+    document.getElementById('serving-note').textContent = (data.picks_handled || 0) > 0
+      ? 'This plugin has answered ' + data.picks_handled + ' picks (decided by weekly-soonest ranking: ' + (data.picks_ranked || 0) + '). Counters only count picks this plugin handled; the host may route other traffic elsewhere.'
+      : 'No picks observed yet. Registration only means the plugin loaded and registered its routes; it is not proof that the host routed traffic here.';
+
+    var pinRows = (data.pins || []).map(function (pin) {
+      return [
+        pin.provider, pin.model, pin.auth_id,
+        new Date(pin.pinned_at).toLocaleString(),
+        new Date(pin.last_picked_at).toLocaleString(),
+        pin.missing_since ? new Date(pin.missing_since).toLocaleString() : 'present'
+      ];
+    });
+    replace(document.getElementById('pins'), [table(['Provider', 'Model', 'Auth (redacted)', 'Pinned at', 'Last picked', 'Availability'], pinRows)]);
+
+    var quotaRows = [];
+    (data.quota || []).forEach(function (account) {
+      var label = el('div');
+      label.appendChild(el('code', null, account.auth || account.auth_id));
+      if (account.group) { label.appendChild(el('div', 'muted', 'group ' + account.group)); }
+      if (account.provider) { label.appendChild(el('div', 'muted', account.provider)); }
+      if (account.error) {
+        label.appendChild(el('span', 'pill bad', 'probe failed'));
+        label.appendChild(el('div', 'muted', account.error));
+        if (account.retained) { label.appendChild(el('div', 'muted', 'Last valid evidence retained with its original age.')); }
+      }
+      if (!account.windows || !account.windows.length) {
+        quotaRows.push([label, '—', el('span', 'pill warn', 'no readings'), el('span', 'pill warn', 'unknown'), account.probe_age || '—']);
+        return;
+      }
+      account.windows.forEach(function (window, index) {
+        var usage = el('div');
+        usage.appendChild(el('code', null, (100 - window.remaining_percent).toFixed(0) + '% used / ' + window.remaining_percent.toFixed(0) + '% left'));
+        usage.appendChild(remainingBar(window.remaining_percent));
+        var state = account.stale ? el('span', 'pill warn', 'stale / ignored') : el('span', window.exhausted ? 'pill bad' : 'pill ok', window.exhausted ? 'exhausted' : 'available');
+        quotaRows.push([
+          index === 0 ? label : '',
+          window.name + ' (' + Math.round(window.window_minutes) + 'm)',
+          usage,
+          state,
+          resetText(window) + (window.models && window.models.length ? ' · models: ' + window.models.join(', ') : '')
+        ]);
+      });
+      quotaRows[quotaRows.length - 1][4] = quotaRows[quotaRows.length - 1][4] + ' · reading ' + (account.probe_age || '—');
+    });
+    replace(document.getElementById('quota'), [table(['Auth (redacted)', 'Window', 'Usage', 'State', 'Reset / models'], quotaRows)]);
+
+    var previewRows = (data.previews || []).map(function (preview) {
+      var source = preview.observed_traffic ? el('span', 'pill info', 'observed traffic') : el('span', 'pill info', 'configured route');
+      var decided = preview.ranked
+        ? el('span', 'pill ok', 'quota ranking preview')
+        : el('span', 'pill warn', 'delegated / no usable quota');
+      return [preview.provider, preview.model, preview.auth || '—', source, decided];
+    });
+    replace(document.getElementById('previews'), [table(['Provider', 'Model', 'Previewed pick (redacted)', 'Route source', 'Preview basis'], previewRows)]);
+
+    var countRows = (data.pick_counts || []).map(function (count) {
+      return [count.provider, count.handled, count.ranked];
+    });
+    replace(document.getElementById('pick-counts'), [
+      countRows.length ? table(['Provider', 'Picks handled', 'Decided by weekly-soonest'], countRows) : el('div', 'empty', 'No picks observed yet.')
+    ]);
+  }
+
+  // fetchData loads the cached snapshot. It never sends the management key, so it is safe on the
+  // public resource route and cannot leak the key into a request the host logs.
+  function fetchData(options) {
+    if (inFlight) { return; }
+    inFlight = true;
+    fetch(DATA_URL, { method: 'GET', headers: { 'Accept': 'application/json' }, cache: 'no-store' })
+      .then(function (response) {
+        if (!response.ok) { throw new Error('snapshot request failed: HTTP ' + response.status); }
+        return response.json();
+      })
+      .then(function (data) {
+        lastError = '';
+        setBanner('ok', options && options.note ? options.note : '');
+        render(data);
+      })
+      .catch(function (error) {
+        lastError = error && error.message ? error.message : 'snapshot request failed';
+        // Keep the last good state on screen and say it may be stale.
+        setBanner('error', 'Could not reload the snapshot: ' + lastError + '. Showing the last data received' +
+          (lastData && lastData.generated_at ? ' at ' + new Date(lastData.generated_at).toLocaleString() : '') + '.');
+      })
+      .then(function () { inFlight = false; });
+  }
+
+  function probeNow() {
+    if (inFlight) { return; }
+    if (!managementKey) {
+      setBanner('error', 'Enter the host management key to run a probe. The key stays in this page only.');
       return;
     }
-    account.windows.forEach(function (window, index) {
-      var usage = el('div');
-      usage.appendChild(el('code', null, (100 - window.remaining_percent).toFixed(0) + '% used / ' + window.remaining_percent.toFixed(0) + '% left'));
-      usage.appendChild(remainingBar(window.remaining_percent));
-      var state = el('span', window.exhausted ? 'pill bad' : 'pill ok', window.exhausted ? 'exhausted' : 'available');
-      quotaRows.push([
-        index === 0 ? label : '',
-        window.name + ' (' + Math.round(window.window_minutes) + 'm)',
-        usage,
-        state,
-        resetText(window) + (window.models && window.models.length ? ' · models: ' + window.models.join(', ') : '')
-      ]);
-    });
-    quotaRows[quotaRows.length - 1][4] = quotaRows[quotaRows.length - 1][4] + ' · probe ' + (account.probe_age || '—');
-  });
-  document.getElementById('quota').appendChild(table(['Auth (redacted)', 'Window', 'Usage', 'State', 'Reset / models'], quotaRows));
+    inFlight = true;
+    var button = document.getElementById('probe-now');
+    button.disabled = true;
+    fetch(REFRESH_URL, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + managementKey }
+    })
+      .then(function (response) {
+        if (response.status === 401 || response.status === 403) {
+          managementKey = '';
+          document.getElementById('management-key').value = '';
+          throw new Error('the management key was rejected; it has been cleared');
+        }
+        if (!response.ok) { throw new Error('probe request failed: HTTP ' + response.status); }
+        return response.json();
+      })
+      .then(function (data) {
+        setBanner('ok', 'Probe finished.');
+        render(data);
+      })
+      .catch(function (error) {
+        setBanner('error', error && error.message ? error.message : 'probe request failed');
+      })
+      .then(function () {
+        inFlight = false;
+        button.disabled = false;
+      });
+  }
 
-  var nextRows = (data.next_picks || []).map(function (pick) {
-    var status = pick.ranked ? el('span', 'pill ok', 'weekly-soonest') : el('span', 'pill info', 'sticky / built-in');
-    return [pick.provider, pick.model, pick.auth || '—', status];
+  document.getElementById('management-key').addEventListener('input', function (event) {
+    managementKey = event.target.value;
   });
-  document.getElementById('next-picks').appendChild(table(['Provider', 'Representative model', 'Auth (redacted)', 'Decided by'], nextRows));
+  document.getElementById('probe-now').addEventListener('click', probeNow);
+  document.getElementById('reload-data').addEventListener('click', function () { fetchData(); });
+  document.getElementById('forget-key').addEventListener('click', function () {
+    managementKey = '';
+    document.getElementById('management-key').value = '';
+    setBanner('ok', 'Management key cleared from memory.');
+  });
 
-  var countRows = (data.pick_counts || []).map(function (count) {
-    return [count.provider, count.handled, count.ranked];
+  render(readBootstrap());
+
+  function schedulePoll() {
+    if (pollTimer !== null) { clearInterval(pollTimer); }
+    pollTimer = setInterval(function () {
+      if (document.visibilityState === 'visible') { fetchData(); }
+    }, POLL_MS);
+  }
+  schedulePoll();
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') { fetchData(); }
   });
-  document.getElementById('pick-counts').appendChild(table(['Provider', 'Picks handled', 'Decided by weekly-soonest'], countRows));
 })();
 </script>
 </body>

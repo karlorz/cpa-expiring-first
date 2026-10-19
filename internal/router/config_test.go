@@ -57,9 +57,56 @@ func TestParseConfigRejectsInvalidValues(t *testing.T) {
 		"max_age: 30s\n",
 		"reserve_percent: -1\n",
 		"reserve_percent: 100\n",
+		"preview_models: antigravity\n",
+		"preview_models:\n  - {provider: antigravity}\n",
+		"preview_models:\n  - {model: gemini-3.8-flash-high}\n",
+		"preview_models:\n  - {provider: '  ', model: x}\n",
 	} {
 		if _, err := ParseConfig([]byte(raw)); err == nil {
 			t.Errorf("ParseConfig(%q) succeeded, want error", raw)
 		}
+	}
+}
+
+func TestParseConfigPreviewModels(t *testing.T) {
+	raw := "preview_models:\n" +
+		"  - {provider: ' Antigravity ', model: ' gemini-3.8-flash-high '}\n" +
+		"  - {provider: antigravity, model: gemini-3.8-flash-high}\n" +
+		"  - {provider: codex, model: gpt-5-codex}\n"
+	cfg, err := ParseConfig([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.PreviewModels()
+	want := []PreviewModel{
+		{Provider: "antigravity", Model: "gemini-3.8-flash-high"},
+		{Provider: "codex", Model: "gpt-5-codex"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("PreviewModels() = %+v, want %+v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Errorf("PreviewModels()[%d] = %+v, want %+v", index, got[index], want[index])
+		}
+	}
+
+	// The getter hands out a copy, so a caller cannot change the active configuration.
+	got[0].Model = "mutated"
+	if cfg.PreviewModels()[0].Model != "gemini-3.8-flash-high" {
+		t.Error("PreviewModels() exposed the internal slice")
+	}
+}
+
+func TestDefaultConfigHasNoPinnedExamples(t *testing.T) {
+	if models := DefaultConfig().PreviewModels(); len(models) != 0 {
+		t.Fatalf("DefaultConfig().PreviewModels() = %+v, want none", models)
+	}
+	cfg, err := ParseConfig([]byte("enabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if models := cfg.PreviewModels(); len(models) != 0 {
+		t.Fatalf("ParseConfig without preview_models = %+v, want none", models)
 	}
 }

@@ -109,3 +109,37 @@ func TestQuotaOverlayEmptyFileUsesMemory(t *testing.T) {
 		t.Fatalf("Load() = %+v, want the memory reading", quota)
 	}
 }
+
+func TestElapsedFiveHourResetRestoresSoonerWeeklyAccount(t *testing.T) {
+	reset := t0.Add(10 * time.Minute)
+	quota := Quota{
+		"a": reading(weekly(20, t0.Add(24*time.Hour)), session(100, reset)),
+		"b": reading(weekly(20, t0.Add(48*time.Hour)), session(20, t0.Add(2*time.Hour))),
+	}
+	s := quotaScheduler(t, quota)
+	req := request("gemini-3.8-flash-high", candidate("a", 0), candidate("b", 0))
+	mustPick(t, s, req, t0, "b")
+	mustPick(t, s, req, reset.Add(time.Second), "a")
+	if !quota["a"].UpdatedAt.Equal(t0) {
+		t.Fatal("elapsed reset changed original evidence age")
+	}
+}
+
+func TestWeeklyRolloverMovesToNextExpiringAccount(t *testing.T) {
+	reset := t0.Add(10 * time.Minute)
+	s := quotaScheduler(t, Quota{
+		"a": reading(weekly(20, reset)),
+		"b": reading(weekly(20, t0.Add(48*time.Hour))),
+	})
+	req := request("gemini-3.8-flash-high", candidate("a", 100), candidate("b", 0))
+	mustPick(t, s, req, t0, "a")
+	mustPick(t, s, req, reset.Add(time.Second), "b")
+}
+
+func TestPreviewMirrorsCodexWebsocketDelegation(t *testing.T) {
+	s := quotaScheduler(t, Quota{"ws": reading(weekly(10, t0.Add(time.Hour)))})
+	id, ok := s.Preview([]pluginapi.SchedulerAuthCandidate{{ID: "ws", Attributes: map[string]string{"websockets": "true"}}}, "codex", "gpt-5-codex", t0)
+	if ok || id != "" {
+		t.Fatalf("Preview = %q,%v; want delegated", id, ok)
+	}
+}

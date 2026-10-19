@@ -7,7 +7,7 @@ This is the `karlorz` fork of [magoz/cpa-expiring-first](https://github.com/mago
 - **In-process quota probes** for Antigravity, Claude, Codex and xAI, run on a background interval. The plugin no longer depends on an external writer for its readings.
 - **An optional quota file overlay**, which can still override individual accounts (see [Quota file](#quota-file)).
 - **Live Voice passthrough** for Codex Live/Realtime traffic, so this can be the only scheduler plugin installed.
-- **A console page** showing quota windows, the next pick per provider and the picks this plugin served.
+- **A console page** showing quota windows, configured and observed model previews, and the picks this plugin served.
 
 Without fresh readings it routes like [sticky-fill-first](https://github.com/magoz/cpa-sticky-fill-first): it stays on the account currently serving until that account runs out.
 
@@ -19,7 +19,7 @@ Every `probe_interval` (default `5m`) the plugin reads each credential's quota t
 
 | Provider | Probe | Windows |
 | --- | --- | --- |
-| Antigravity | `retrieveUserQuotaSummary` | 5-hour and weekly, **once per model group**: `gemini` and `claude_gpt` |
+| Antigravity | `retrieveUserQuotaSummary` | 5-hour and weekly, scoped to `gemini` and `claude_gpt` model groups |
 | Claude | unified rate-limit headers, else usage JSON | 5-hour and weekly |
 | Codex | `wham/usage` | 5-hour and weekly (monthly on free plans) |
 | xAI | plan classification plus the OAuth weekly billing window | weekly |
@@ -80,7 +80,7 @@ Codex Live/Realtime traffic (`gpt-live-1-codex`) is decided by its own allowlist
 
 - Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic.
 - A Live request is never answered by the weekly-soonest ranking. With **no** `live_auth_ids` configured, the plugin leaves the request unhandled, so CLIProxyAPI's built-in scheduler decides, exactly as if this plugin were not installed.
-- With an allowlist, the plugin picks from the matching candidates: `fill-first` (default) or `round-robin`.
+- With an allowlist, the plugin picks from the matching candidates: `fill-first`.
 - `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no allowlisted credential is available; `fail_closed: false` delegates to the built-in scheduler instead.
 
 This is the same classification and selection as [karlorz/cpa-live-voice](https://github.com/karlorz/cpa-live-voice), folded into this plugin so the two no longer have to run together.
@@ -95,7 +95,7 @@ plugins:
     expiring-first:
       priority: 110   # consulted first, and handles Live itself
     cpa-live-voice:
-      priority: 100   # never reached; remove it, or keep it as a fallback for other hosts
+      priority: 100   # retained for hosts where it is the selected scheduler
 ```
 
 With `priority: 110` on `expiring-first` and `100` on `cpa-live-voice`, `expiring-first` serves both Live and ordinary traffic and `cpa-live-voice` is never invoked. Remove `cpa-live-voice` if you do not need it elsewhere.
@@ -119,13 +119,13 @@ http://<host>:<port>/v0/resource/plugins/expiring-first/status
 
 It needs no management key and shows:
 
-- Whether the scheduler is active, the version, the configured probe interval, the last probe time, and the Live Voice pool.
+- Plugin registration, observed routing activity, version, probe interval, last probe time, and Live Voice pool. Registration alone does not prove that the host selected this scheduler.
 - The current **pins** table: provider, model, redacted auth, pin time, last pick time and availability.
 - **Per-account windows**: provider, redacted auth, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
-- **The next pick per provider** for a representative model, and whether the weekly-soonest ranking or the sticky/built-in path would decide it.
-- **Pick counts** per provider (handled, and how many the weekly-soonest ranking decided), so it is obvious this plugin is the active scheduler.
+- **Model previews** from `preview_models` and routes observed in scheduler picks. Previews estimate quota ranking from account-level eligibility; the host applies model support, request restrictions, and model-specific cooldowns at request time.
+- **Pick counts** per provider (handled and quota-ranked). These count scheduler decisions; successful upstream completions require request logs.
 
-The page has no configuration editing: configuration stays in CLIProxyAPI's plugin config fields.
+The cached display refreshes every 30 seconds while visible. **Refresh display** reloads cached data. **Probe now** runs provider probes using a management key kept only in page memory. Configuration stays in CLIProxyAPI's plugin config fields. Failed probes retain the last successful reading with its original timestamp until `max_age` expires; the page shows the latest error alongside retained evidence.
 
 The management routes below are protected by the management key:
 
@@ -144,7 +144,7 @@ curl -s -H "Authorization: Bearer $MANAGEMENT_KEY" \
 [{"auth_id":"anti***on","auth":"anti***on","provider":"antigravity","antigravity_group":"gemini","updated_at":"2026-10-09T19:30:02Z","probe_age":"12s ago","windows":[{"name":"weekly","window_minutes":10080,"used_percent":41,"remaining_percent":59,"resets_at":"2026-10-16T18:00:00Z","reset_in":"6d 22h left","models":["gemini"],"exhausted":false}]}]
 ```
 
-Credential IDs are redacted in the page and in every JSON route. Full IDs stay in the plugin logs, as before.
+Credential IDs use stable, distinct hashed labels in the page and in every JSON route. Full IDs stay in the plugin logs, as before.
 
 ## Quota file (optional)
 
@@ -214,6 +214,10 @@ plugins:
       switch_after: 5m
       # Optional absolute path that keeps pins across restarts. Omit to keep pins in memory only.
       pins_file: /home/me/cliproxyapi/expiring-first-pins.json
+      # Preview this daily route even before this plugin observes traffic for it.
+      preview_models:
+        - provider: antigravity
+          model: gemini-3.8-flash-high
       # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
       live_auth_ids: [codex-live-account.json]
       # Reject a Live request when no live_auth_ids credential is available (default true).

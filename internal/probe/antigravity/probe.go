@@ -13,7 +13,7 @@ import (
 )
 
 type httpDoer interface {
-	HTTPDo(ctx context.Context, req host.HTTPRequest) (host.HTTPResponse, error)
+	HTTPDoRaw(ctx context.Context, req host.HTTPRequest) (host.HTTPResponse, error)
 }
 
 // Prober runs Antigravity quota summary probes through the host HTTP transport.
@@ -33,9 +33,15 @@ func NewProber(hostAPI httpDoer, clockSource clock) Prober {
 // Probe requests the quota summary and returns the target model group's reading.
 func (p Prober) Probe(ctx context.Context, request ProbeRequest) ProbeResult {
 	observedAt := p.clock.Now().UTC()
+	if strings.TrimSpace(request.ProjectID) == "" {
+		return failedProbe(request, observedAt, "missing quota project ID")
+	}
+	if strings.TrimSpace(request.AccessToken) == "" {
+		return failedProbe(request, observedAt, "missing access token")
+	}
 	lastStatus := 0
 	for _, url := range retrieveUserQuotaSummaryURLs {
-		response, errDo := p.host.HTTPDo(ctx, host.HTTPRequest{
+		response, errDo := p.host.HTTPDoRaw(ctx, host.HTTPRequest{
 			AuthIndex: request.AuthIndex,
 			Method:    http.MethodPost,
 			URL:       url,
@@ -43,7 +49,8 @@ func (p Prober) Probe(ctx context.Context, request ProbeRequest) ProbeResult {
 			Body:      probeBody(request),
 		})
 		if errDo != nil {
-			return failedProbe(request, observedAt, "host http do failed")
+			lastStatus = 0
+			continue
 		}
 		lastStatus = response.StatusCode
 		if response.StatusCode != http.StatusOK {
@@ -55,6 +62,9 @@ func (p Prober) Probe(ctx context.Context, request ProbeRequest) ProbeResult {
 			result.AuthIndex = request.AuthIndex
 			return result
 		}
+	}
+	if lastStatus == 0 {
+		return failedProbe(request, observedAt, "quota transport failed")
 	}
 	return failedProbe(request, observedAt, fmt.Sprintf("retrieve quota summary status %d", lastStatus))
 }
@@ -76,12 +86,9 @@ func probeBody(request ProbeRequest) []byte {
 func probeHeaders(request ProbeRequest) host.Header {
 	headers := host.Header{
 		"Accept":        []string{"application/json"},
-		"Authorization": []string{"Bearer $TOKEN$"},
+		"Authorization": []string{"Bearer " + strings.TrimSpace(request.AccessToken)},
 		"Content-Type":  []string{"application/json"},
-		"User-Agent":    []string{"antigravity/cli/1.0.8 darwin/arm64"},
-	}
-	if token := strings.TrimSpace(request.AccessToken); token != "" {
-		headers["Authorization"] = []string{"Bearer " + token}
+		"User-Agent":    []string{"antigravity/hub/2.23.0 darwin/arm64"},
 	}
 	return headers
 }
