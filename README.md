@@ -235,7 +235,30 @@ With `pins_file`, the plugin writes the file (mode `0600`, replaced atomically) 
 
 ## Install
 
-From the [CLIProxyAPI plugin store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store), or manually: download the zip for your platform from the [latest release](https://github.com/karlorz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI. Remove other scheduler plugins for the same providers.
+### Plugin marketplace
+
+Add this fork's registry URL as a custom plugin store source:
+
+```text
+https://raw.githubusercontent.com/karlorz/cpa-expiring-first/main/registry.json
+```
+
+Or append it to your existing `plugins.store-sources` configuration:
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - "https://raw.githubusercontent.com/karlorz/cpa-expiring-first/main/registry.json"
+```
+
+Keep any existing source entries. Reload the configuration or restart CLIProxyAPI, refresh the Plugin Store, then select **Expiring First (karlorz)** from this custom source and install it. The store resolves the latest release from `karlorz/cpa-expiring-first`, downloads the archive for your platform, and verifies its checksum.
+
+The official source also lists magoz's plugin under the same `expiring-first` ID. Select the **karlorz custom source** for installation and future updates. This fork uses the same plugin filename and `plugins.configs.expiring-first` configuration key. After installation, enable the plugin and give it a higher scheduler priority than `cpa-live-voice`, as described above.
+
+### Manual installation
+
+Download the zip for your platform from the [latest release](https://github.com/karlorz/cpa-expiring-first/releases/latest), check it against `checksums.txt`, extract `expiring-first.so`, `.dylib` or `.dll` into `<plugins.dir>/<goos>/<goarch>/`, and restart CLIProxyAPI.
 
 ## Development
 

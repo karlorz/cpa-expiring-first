@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "expiring-first",
+      "name": "Expiring First (karlorz)",
+      "description": "Weekly-soonest quota scheduling with in-process Antigravity, Claude, Codex and xAI probes, Live Voice routing, and a quota console.",
+      "author": "karlorz",
+      "version": "0.3.0",
+      "repository": "https://github.com/karlorz/cpa-expiring-first",
+      "homepage": "https://github.com/karlorz/cpa-expiring-first",
+      "license": "MIT",
+      "tags": ["Scheduler", "Quota", "Antigravity", "Claude", "Codex", "xAI", "Management"]
+    }
+  ]
+}
