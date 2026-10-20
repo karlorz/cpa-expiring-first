@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -116,7 +115,7 @@ func newTestHandler() (*Handler, *fakeSources) {
 	return handler, sources
 }
 
-func TestStatusPageRedactsCredentialsAndEmbedsPayload(t *testing.T) {
+func TestStatusPageNamesCredentialsAndEmbedsPayload(t *testing.T) {
 	handler, _ := newTestHandler()
 	resp, errHandle := handler.Handle(context.Background(), pluginapi.ManagementRequest{
 		Method: http.MethodGet,
@@ -129,11 +128,15 @@ func TestStatusPageRedactsCredentialsAndEmbedsPayload(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	body := string(resp.Body)
-	if strings.Contains(body, "antigravity-primary-account.json") {
-		t.Fatal("page leaked a full credential ID")
+	if !strings.Contains(body, "antigravity-primary-account.json") {
+		t.Fatalf("page does not carry the CPA credential ID: %s", body)
 	}
-	if !strings.Contains(body, Redact("antigravity-primary-account.json")) {
-		t.Fatalf("page does not carry the redacted credential ID: %s", body)
+	if strings.Contains(body, "Auth (redacted)") {
+		t.Fatal("page still labels the auth column as redacted")
+	}
+	// CPA names this entity a credential; the page uses the same word as the host.
+	if !strings.Contains(body, "'Credential'") {
+		t.Fatal("page does not label the credential column the way CPA does")
 	}
 	if !strings.Contains(body, "Routing previews") || !strings.Contains(body, "Weekly-soonest") {
 		t.Fatal("page does not explain the ranking and the previews")
@@ -189,7 +192,7 @@ func TestPageIsResponsive(t *testing.T) {
 	}
 }
 
-func TestPinsRouteRedactsAuthIDs(t *testing.T) {
+func TestPinsRouteNamesAuthFiles(t *testing.T) {
 	handler, _ := newTestHandler()
 	resp, errHandle := handler.Handle(context.Background(), pluginapi.ManagementRequest{
 		Method: http.MethodGet,
@@ -198,15 +201,15 @@ func TestPinsRouteRedactsAuthIDs(t *testing.T) {
 	if errHandle != nil {
 		t.Fatal(errHandle)
 	}
-	if strings.Contains(string(resp.Body), "antigravity-primary-account.json") {
-		t.Fatal("pins route leaked a full credential ID")
-	}
 	var pins []PinView
 	if errUnmarshal := json.Unmarshal(resp.Body, &pins); errUnmarshal != nil {
 		t.Fatal(errUnmarshal)
 	}
 	if len(pins) != 1 || pins[0].Provider != "antigravity" {
 		t.Fatalf("pins = %+v", pins)
+	}
+	if pins[0].AuthID != "antigravity-primary-account.json" {
+		t.Errorf("pin auth = %q, want the CPA credential ID", pins[0].AuthID)
 	}
 }
 
@@ -219,15 +222,15 @@ func TestQuotaRouteDescribesWindows(t *testing.T) {
 	if errHandle != nil {
 		t.Fatal(errHandle)
 	}
-	if strings.Contains(string(resp.Body), "antigravity-primary-account.json") {
-		t.Fatal("quota route leaked a full credential ID")
-	}
 	var views []QuotaView
 	if errUnmarshal := json.Unmarshal(resp.Body, &views); errUnmarshal != nil {
 		t.Fatal(errUnmarshal)
 	}
 	if len(views) != 1 || len(views[0].Windows) != 2 {
 		t.Fatalf("quota = %+v", views)
+	}
+	if views[0].AuthID != "antigravity-primary-account.json" || views[0].Auth != "antigravity-primary-account.json" {
+		t.Errorf("quota auth = %q/%q, want the CPA credential ID", views[0].AuthID, views[0].Auth)
 	}
 	// Windows are ordered longest first, and the exhausted 5h window is marked.
 	if views[0].Windows[0].Name != "weekly" {
@@ -269,8 +272,8 @@ func TestDataRouteServesCachedSnapshotWithoutProbing(t *testing.T) {
 		if !view.Registered || len(view.Previews) == 0 || len(view.Quota) != 1 {
 			t.Fatalf("%s view = %+v", path, view)
 		}
-		if strings.Contains(string(resp.Body), "antigravity-primary-account.json") {
-			t.Fatalf("%s leaked a full credential ID", path)
+		if view.Quota[0].AuthID != "antigravity-primary-account.json" {
+			t.Fatalf("%s quota auth = %q, want the CPA credential ID", path, view.Quota[0].AuthID)
 		}
 	}
 }
@@ -408,7 +411,7 @@ func TestStatusViewDistinguishesReadingsFromProbeOutcomes(t *testing.T) {
 	// The failed row keeps its error, and a row without readings is not reported as a reading.
 	failed := false
 	for _, account := range view.Quota {
-		if account.AuthID == Redact("codex-broken-account.json") {
+		if account.AuthID == "codex-broken-account.json" {
 			failed = account.Error != ""
 		}
 	}
@@ -450,66 +453,46 @@ func TestStatusViewShowsPreviewsAndCounts(t *testing.T) {
 	}
 }
 
-// TestRedactIsStableAndCollisionFree covers the labels the page publishes: the same credential ID
-// always renders the same label, distinct IDs never collide, and no part of a private name leaks.
-func TestRedactIsStableAndCollisionFree(t *testing.T) {
-	names := []string{
-		"antigravity-primary-account.json",
-		"antigravity-backup-account.json",
-		"antigravity-secondary-account.json",
-		"codex-primary-account.json",
-		"codex-backup-account.json",
-		"codex-tertiary-account.json",
-		"codex-live-account.json",
-		"codex-shared-account.json",
-	}
-	labels := make(map[string]string, len(names))
-	for _, name := range names {
-		label := Redact(name)
-		if other, exists := labels[label]; exists {
-			t.Fatalf("Redact(%q) = Redact(%q) = %q, want distinct labels", name, other, label)
-		}
-		labels[label] = name
-		if got := Redact(name); got != label {
-			t.Errorf("Redact(%q) is not stable: %q then %q", name, label, got)
-		}
-		suffix := label[strings.LastIndex(label, "-")+1:]
-		if len(suffix) != 10 {
-			t.Errorf("Redact(%q) = %q, want 10 hex characters after the prefix", name, label)
-		}
-		if _, errHex := hex.DecodeString(suffix); errHex != nil {
-			t.Errorf("Redact(%q) = %q, want a hex suffix", name, label)
-		}
+// TestViewsUseCPACredentialIDs checks the page publishes CPA's own credential identity in every
+// view, under the same IDs the management API uses.
+func TestViewsUseCPACredentialIDs(t *testing.T) {
+	want := map[string]bool{
+		"antigravity-primary-account.json": true,
+		"antigravity-backup-account.json":  true,
+		"codex-primary-account.json":       true,
+		"codex-live-account.json":          true,
+		"kimi-1787418023841.json":          true,
 	}
 
-	// The provider-ish prefix stays readable, so the page can group labels by provider.
-	for _, name := range names[:3] {
-		if !strings.HasPrefix(Redact(name), "antigravity-") {
-			t.Errorf("Redact(%q) = %q, want an antigravity- prefix", name, Redact(name))
+	handler, sources := newTestHandler()
+	sources.pinned = nil
+	sources.quota = router.Quota{}
+	sources.accounts = nil
+	for name := range want {
+		sources.pinned = append(sources.pinned, router.PinView{Provider: "codex", Model: "gpt-5-codex", AuthID: name, PinnedAt: now, LastPickedAt: now})
+		sources.quota[name] = router.QuotaAccount{UpdatedAt: now, Windows: []router.QuotaWindow{{Minutes: 10080, UsedPercent: 10, ResetsAt: now.Add(time.Hour)}}}
+		sources.accounts = append(sources.accounts, probe.Account{AuthID: name, Provider: "codex", ObservedAt: now})
+	}
+
+	view := handler.statusView(context.Background())
+	if len(view.Pins) != len(want) || len(view.Quota) != len(want) {
+		t.Fatalf("view = %d pins, %d quota; want %d each", len(view.Pins), len(view.Quota), len(want))
+	}
+	for _, pin := range view.Pins {
+		if !want[pin.AuthID] {
+			t.Errorf("pin auth = %q, want one of the CPA credential IDs", pin.AuthID)
 		}
 	}
-	for _, name := range names[3:] {
-		if !strings.HasPrefix(Redact(name), "codex-") {
-			t.Errorf("Redact(%q) = %q, want a codex- prefix", name, Redact(name))
+	for _, account := range view.Quota {
+		if !want[account.AuthID] || account.Auth != account.AuthID {
+			t.Errorf("quota auth = %q/%q, want the CPA credential ID in both fields", account.AuthID, account.Auth)
 		}
-	}
-	if got := Redact("user@example.com.json"); !strings.HasPrefix(got, "acct-") {
-		t.Errorf("Redact of a private name = %q, want a neutral acct- prefix", got)
-	}
-	if got := Redact("user@example.com.json"); strings.Contains(got, "user") || strings.Contains(got, "example") {
-		t.Errorf("Redact(%q) = %q, want no part of the name published", "user@example.com.json", got)
-	}
-	if got := Redact(""); got != "" {
-		t.Errorf("Redact(%q) = %q, want empty", "", got)
-	}
-	if got := Redact("  "); got != "" {
-		t.Errorf("Redact of blanks = %q, want empty", got)
 	}
 }
 
-// TestRedactIsConsistentAcrossViews checks one credential renders the same label in pins, quota
-// and previews, so the page can be read across sections.
-func TestRedactIsConsistentAcrossViews(t *testing.T) {
+// TestCredentialIDsAreConsistentAcrossViews checks one credential renders under the same ID in
+// pins, quota and previews, so the page can be read across sections.
+func TestCredentialIDsAreConsistentAcrossViews(t *testing.T) {
 	handler, sources := newTestHandler()
 	const authID = "antigravity-primary-account.json"
 	sources.pinned = []router.PinView{{Provider: "antigravity", Model: "gemini-3-pro", AuthID: authID, PinnedAt: now, LastPickedAt: now}}
@@ -517,16 +500,23 @@ func TestRedactIsConsistentAcrossViews(t *testing.T) {
 	sources.accounts = []probe.Account{{AuthID: authID, Provider: "antigravity", ObservedAt: now}}
 
 	view := handler.statusView(context.Background())
-	label := Redact(authID)
-	if view.Pins[0].AuthID != label {
-		t.Errorf("pin label = %q, want %q", view.Pins[0].AuthID, label)
+	if view.Pins[0].AuthID != authID {
+		t.Errorf("pin auth = %q, want %q", view.Pins[0].AuthID, authID)
 	}
-	if view.Quota[0].AuthID != label || view.Quota[0].Auth != label {
-		t.Errorf("quota labels = %q/%q, want %q", view.Quota[0].AuthID, view.Quota[0].Auth, label)
+	if view.Quota[0].AuthID != authID || view.Quota[0].Auth != authID {
+		t.Errorf("quota auth = %q/%q, want %q", view.Quota[0].AuthID, view.Quota[0].Auth, authID)
 	}
 	for _, preview := range view.Previews {
-		if preview.Auth != "" && preview.Auth != label {
-			t.Errorf("preview label = %q, want %q", preview.Auth, label)
+		if preview.Provider != "antigravity" {
+			continue
+		}
+		if preview.Auth != authID {
+			t.Errorf("preview auth = %q, want %q", preview.Auth, authID)
+		}
+		for _, account := range preview.Accounts {
+			if account.Auth != authID {
+				t.Errorf("ranked account auth = %q, want %q", account.Auth, authID)
+			}
 		}
 	}
 }
@@ -576,7 +566,7 @@ func TestRetainedEvidenceShowsOriginalAgeAndStaleness(t *testing.T) {
 	}
 }
 
-func TestAccountOrderIsModelScopedRedactedAndReadOnly(t *testing.T) {
+func TestAccountOrderIsModelScopedAndReadOnly(t *testing.T) {
 	handler, sources := newTestHandler()
 	sources.quota["antigravity-primary-account.json"] = router.QuotaAccount{UpdatedAt: now, Windows: []router.QuotaWindow{{Minutes: 10080, ResetsAt: now.Add(time.Hour), Models: []string{"gemini"}}, {Minutes: 300, ResetsAt: now.Add(time.Minute), UsedPercent: 10, Models: []string{"gemini"}}}}
 	before := sources.pinned[0]
@@ -585,7 +575,7 @@ func TestAccountOrderIsModelScopedRedactedAndReadOnly(t *testing.T) {
 		if route.Provider != "antigravity" {
 			continue
 		}
-		if len(route.Accounts) != 1 || route.Accounts[0].Order != 1 || !route.Accounts[0].Next || route.Accounts[0].Auth != Redact("antigravity-primary-account.json") {
+		if len(route.Accounts) != 1 || route.Accounts[0].Order != 1 || !route.Accounts[0].Next || route.Accounts[0].Auth != "antigravity-primary-account.json" {
 			t.Fatalf("order=%+v", route.Accounts)
 		}
 		if route.Model == "gemini-3-pro" && !route.Accounts[0].LastSelected {
@@ -596,8 +586,8 @@ func TestAccountOrderIsModelScopedRedactedAndReadOnly(t *testing.T) {
 		t.Fatal("ranking changed routing state")
 	}
 	raw, _ := json.Marshal(view)
-	if strings.Contains(string(raw), "antigravity-primary-account.json") {
-		t.Fatal("raw credential leaked")
+	if !strings.Contains(string(raw), `"auth":"antigravity-primary-account.json"`) {
+		t.Fatal("the account order does not carry the CPA credential ID")
 	}
 	if !strings.Contains(StatusHTML, "Schedule outcome") {
 		t.Fatal("compact schedule outcome heading missing")

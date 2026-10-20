@@ -1,3 +1,7 @@
+## v0.3.7
+
+- Name credentials by CPA's own credential ID in the console page and every JSON route, the same ID the management API uses, instead of the hashed `antigravity-…`/`acct-…` labels. Rename credentials if a name should stay private: the status page and its `/data` route are public.
+
 ## v0.3.6
 
 - List every changeable plugin setting on the CPA Plugins form with the ParseConfig default in the field description: `max_age=30m`, `probe_interval=5m`, `switch_after=5m`, `reserve_percent=0`, `clear_stale_cooldowns=true`, `write_priorities=true`, `probe_antigravity_claude_gpt=false`, `fail_closed=true`.

@@ -262,7 +262,7 @@ const StatusHTML = `<!doctype html>
         pin.missing_since ? new Date(pin.missing_since).toLocaleString() : 'present'
       ];
     });
-    replace(document.getElementById('pins'), [table(['Provider', 'Model', 'Auth (redacted)', 'Pinned at', 'Last picked', 'Availability'], pinRows)]);
+    replace(document.getElementById('pins'), [table(['Provider', 'Model', 'Credential', 'Pinned at', 'Last picked', 'Availability'], pinRows)]);
 
     var orderSections = [];
     (data.previews || []).forEach(function (route) {
@@ -274,7 +274,7 @@ const StatusHTML = `<!doctype html>
         if (account.last_selected) { result += ' · last selected'; }
         return [result, account.auth, account.account_priority, account.weekly || '—', account.five_hour || '—', account.reason];
       });
-      section.appendChild(table(['Order / outcome', 'Account', 'Account priority', 'Weekly', 'Five-hour', 'Reason'], rows));
+      section.appendChild(table(['Order / outcome', 'Credential', 'Account priority', 'Weekly', 'Five-hour', 'Reason'], rows));
       orderSections.push(section);
     });
     replace(document.getElementById('account-order'), orderSections.length ? orderSections : [el('div', 'empty', 'Configure preview_models or send a request to see the account order.')]);
@@ -314,7 +314,7 @@ const StatusHTML = `<!doctype html>
       });
       quotaRows[quotaRows.length - 1][4] = quotaRows[quotaRows.length - 1][4] + ' · reading ' + (account.probe_age || '—');
     });
-    replace(document.getElementById('quota'), [table(['Auth (redacted)', 'Window', 'Usage', 'State', 'Reset / models'], quotaRows)]);
+    replace(document.getElementById('quota'), [table(['Credential', 'Window', 'Usage', 'State', 'Reset / models'], quotaRows)]);
 
     var previewRows = (data.previews || []).map(function (preview) {
       var source = preview.observed_traffic ? el('span', 'pill info', 'observed traffic') : el('span', 'pill info', 'configured route');
@@ -323,7 +323,7 @@ const StatusHTML = `<!doctype html>
         : el('span', 'pill warn', 'delegated / no usable quota');
       return [preview.provider, preview.model, preview.auth || '—', source, decided];
     });
-    replace(document.getElementById('previews'), [table(['Provider', 'Model', 'Previewed pick (redacted)', 'Route source', 'Preview basis'], previewRows)]);
+    replace(document.getElementById('previews'), [table(['Provider', 'Model', 'Previewed pick', 'Route source', 'Preview basis'], previewRows)]);
 
     var countRows = (data.pick_counts || []).map(function (count) {
       return [count.provider, count.handled, count.ranked];

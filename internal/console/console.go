@@ -11,8 +11,6 @@ package console
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,7 +30,7 @@ import (
 const (
 	// PinsPath lists the current pins.
 	PinsPath = "/plugins/expiring-first/pins"
-	// QuotaPath lists the readings the ranking currently uses, with auth IDs redacted.
+	// QuotaPath lists the readings the ranking currently uses, keyed by CPA's credential ID.
 	QuotaPath = "/plugins/expiring-first/quota"
 	// RefreshPath triggers one probe cycle. The host exposes it on the authenticated
 	// management prefix; the public resource prefix is GET-only, so it cannot be reached there.
@@ -105,7 +103,7 @@ func NewHandler(sources Sources) *Handler {
 func Routes() []pluginapi.ManagementRoute {
 	return []pluginapi.ManagementRoute{
 		{Method: http.MethodGet, Path: PinsPath, Description: "Current pins: the credential each provider and model route is routed to."},
-		{Method: http.MethodGet, Path: QuotaPath, Description: "Quota readings used by the ranking, with auth IDs redacted."},
+		{Method: http.MethodGet, Path: QuotaPath, Description: "Quota readings used by the ranking, keyed by CPA's credential ID."},
 		{Method: http.MethodGet, Path: StatusDataPath, Description: "Cached console snapshot as JSON. Reads state only and never starts a probe."},
 		{Method: http.MethodPost, Path: RefreshPath, Description: "Run one quota probe cycle now. Requires the host management key."},
 	}
@@ -114,7 +112,7 @@ func Routes() []pluginapi.ManagementRoute {
 // Resources returns the browser-navigable resource routes to register with the host. Paths are
 // relative to /v0/resource/plugins/expiring-first/, so the page is reachable at ResourceURL and
 // the snapshot at DataURL. Resource requests are GET-only and unauthenticated, so the snapshot
-// route exposes the same redacted view as the page and never triggers a probe.
+// route exposes the same view as the page and never triggers a probe.
 func Resources() []pluginapi.ResourceRoute {
 	return []pluginapi.ResourceRoute{
 		{
@@ -281,7 +279,7 @@ func (h *Handler) pinsView() []PinView {
 		view := PinView{
 			Provider:     pin.Provider,
 			Model:        pin.Model,
-			AuthID:       Redact(pin.AuthID),
+			AuthID:       pin.AuthID,
 			PinnedAt:     pin.PinnedAt.UTC(),
 			LastPickedAt: pin.LastPickedAt.UTC(),
 		}
@@ -307,7 +305,7 @@ func (h *Handler) quotaView(ctx context.Context) []QuotaView {
 		if view, okView := views[authID]; okView {
 			return view
 		}
-		view := &QuotaView{AuthID: Redact(authID), Auth: Redact(authID)}
+		view := &QuotaView{AuthID: authID, Auth: authID}
 		views[authID] = view
 		order = append(order, authID)
 		return view
@@ -456,7 +454,7 @@ func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
 				}
 			}
 			weekly, fiveHour := quotaSummary(quota[row.AuthID], views[index].Model, now)
-			entry := RankingView{Order: row.Order, Auth: Redact(row.AuthID), Priority: row.Priority, FiveHour: fiveHour, Weekly: weekly, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
+			entry := RankingView{Order: row.Order, Auth: row.AuthID, Priority: row.Priority, FiveHour: fiveHour, Weekly: weekly, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
 			if !row.ResetsAt.IsZero() {
 				reset := row.ResetsAt.UTC()
 				entry.ResetAt = &reset
@@ -470,7 +468,7 @@ func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
 			views[index].Accounts = append(views[index].Accounts, entry)
 		}
 		if len(rows) > 0 && rows[0].Order == 1 {
-			views[index].AuthID, views[index].Auth, views[index].Ranked = Redact(rows[0].AuthID), Redact(rows[0].AuthID), true
+			views[index].AuthID, views[index].Auth, views[index].Ranked = rows[0].AuthID, rows[0].AuthID, true
 		}
 	}
 	return views
@@ -590,42 +588,6 @@ func jsonResponse(status int, body any) pluginapi.ManagementResponse {
 		Headers:    http.Header{"Content-Type": []string{"application/json; charset=utf-8"}, "Cache-Control": []string{"no-store"}},
 		Body:       raw,
 	}
-}
-
-// redactPrefixes are credential-name prefixes whose provider is safe to publish. A credential
-// file named after an email address or an account ID keeps the neutral acct- label, so no part
-// of the name is published.
-var redactPrefixes = []string{"antigravity", "codex", "chatgpt", "claude", "anthropic", "xai", "gemini", "openai", "vertex"}
-
-// Redact turns a credential ID into a stable private label: a provider-ish prefix plus ten hex
-// characters of the SHA-256 of the full ID. The digest distinguishes credentials that share
-// a filename prefix, and the same ID always renders the same label, so
-// the page can reference one credential consistently across pins, quota and previews.
-func Redact(authID string) string {
-	trimmed := strings.TrimSpace(authID)
-	if trimmed == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(trimmed))
-	return redactPrefix(trimmed) + hex.EncodeToString(sum[:])[:10]
-}
-
-func redactPrefix(authID string) string {
-	lowered := strings.ToLower(authID)
-	for _, provider := range redactPrefixes {
-		if !strings.HasPrefix(lowered, provider) {
-			continue
-		}
-		rest := lowered[len(provider):]
-		if rest == "" || !isLowerAlphaNumeric(rest[0]) {
-			return provider + "-"
-		}
-	}
-	return "acct-"
-}
-
-func isLowerAlphaNumeric(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
 // ageString renders how long ago or how far ahead a moment is, in a compact form.

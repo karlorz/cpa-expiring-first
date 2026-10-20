@@ -120,8 +120,8 @@ http://<host>:<port>/v0/resource/plugins/expiring-first/status
 It needs no management key and shows:
 
 - Plugin registration, observed routing activity, version, probe interval, last probe time, and Live Voice pool. Registration alone does not prove that the host selected this scheduler.
-- The current **pins** table: provider, model, redacted auth, pin time, last pick time and availability.
-- **Per-account windows**: provider, redacted auth, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
+- The current **pins** table: provider, model, credential, pin time, last pick time and availability.
+- **Per-account windows**: provider, credential, Antigravity model group, 5-hour remaining/reset, weekly remaining/reset, probe age and probe error.
 - **Schedule outcome** for each configured or observed model: live host accounts, saved account priority, predicted next pick, last selected account, Gemini weekly/five-hour quota, and exclusion reasons. Display refresh reloads the account list and priorities; quota numbers update on `probe_interval` or Probe now. Antigravity Claude/GPT/OpenAI quota is not probed unless `probe_antigravity_claude_gpt: true`.
 - **Model previews** from `preview_models` and routes observed in scheduler picks. Previews estimate quota ranking from account-level eligibility; the host applies model support, request restrictions, and model-specific cooldowns at request time.
 - **Pick counts** per provider (handled and quota-ranked). These count scheduler decisions; successful upstream completions require request logs.
@@ -133,7 +133,7 @@ The management routes below are protected by the management key:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/v0/management/plugins/expiring-first/pins` | Current pins. |
-| `GET` | `/v0/management/plugins/expiring-first/quota` | The readings the ranking uses, with auth IDs redacted. |
+| `GET` | `/v0/management/plugins/expiring-first/quota` | The readings the ranking uses, keyed by CPA's credential ID. |
 | `POST` | `/v0/management/plugins/expiring-first/refresh` | Run one probe cycle now. |
 
 ```bash
@@ -142,10 +142,10 @@ curl -s -H "Authorization: Bearer $MANAGEMENT_KEY" \
 ```
 
 ```json
-[{"auth_id":"anti***on","auth":"anti***on","provider":"antigravity","antigravity_group":"gemini","updated_at":"2026-10-09T19:30:02Z","probe_age":"12s ago","windows":[{"name":"weekly","window_minutes":10080,"used_percent":41,"remaining_percent":59,"resets_at":"2026-10-16T18:00:00Z","reset_in":"6d 22h left","models":["gemini"],"exhausted":false}]}]
+[{"auth_id":"antigravity-1787418023841.json","auth":"antigravity-1787418023841.json","provider":"antigravity","antigravity_group":"gemini","updated_at":"2026-10-09T19:30:02Z","probe_age":"12s ago","windows":[{"name":"weekly","window_minutes":10080,"used_percent":41,"remaining_percent":59,"resets_at":"2026-10-16T18:00:00Z","reset_in":"6d 22h left","models":["gemini"],"exhausted":false}]}]
 ```
 
-Credential IDs use stable, distinct hashed labels in the page and in every JSON route. Full IDs stay in the plugin logs, as before.
+`auth_id` and `auth` carry CPA's own credential identity, the same ID the management API uses (`/v8/management/credentials`). For file-backed credentials that ID is the file name; a runtime-only credential has no file and still has an ID. The page and every JSON route use that same ID, so any row can be matched against CPA's own views. These routes are public, so name credentials accordingly.
 
 ## Quota file (optional)
 
@@ -240,7 +240,7 @@ With `pins_file`, the plugin writes the file (mode `0600`, replaced atomically) 
 - It leaves a request to the configured strategy when the route spans several providers, when it is a Codex pool with a websocket-enabled credential (plugins cannot see whether the client uses a websocket), or when the provider is not in `providers`.
 - Readings are only as fresh as the last probe cycle (`probe_interval`). Running out is still noticed at once, through CLIProxyAPI's cooldown after a 429; a limit reset spent on an account is noticed at the next cycle.
 - After a limit reset, CLIProxyAPI would keep skipping the account until its original cooldown ends. The plugin clears such cooldowns itself; see [Stale cooldowns](#stale-cooldowns).
-- The console page and the JSON routes redact credential IDs. Plugin logs carry auth IDs, as before, and no tokens.
+- The console page and the JSON routes name credentials by CPA's credential ID. Plugin logs carry auth IDs, as before, and no tokens.
 - Cooldowns on a single model are not visible to plugins, so only credential-wide quota cooldowns are cleared.
 
 ## Install
