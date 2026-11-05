@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -60,10 +61,19 @@ func (c Config) Enabled() bool {
 	return len(c.AuthIDs) > 0
 }
 
+// Stats is Live pick usage recorded by this plugin.
+type Stats struct {
+	Picks      int64
+	Rejects    int64
+	LastAuthID string
+	LastAt     time.Time
+}
+
 // Selector picks a credential for Live requests.
 type Selector struct {
 	mu     sync.Mutex
 	config Config
+	stats  Stats
 	// rrIndex is the next round-robin position across matching credentials.
 	rrIndex uint64
 }
@@ -88,6 +98,13 @@ func (s *Selector) Config() Config {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.config
+}
+
+// Stats returns Live pick usage.
+func (s *Selector) Stats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats
 }
 
 // IsLiveRequest reports whether a scheduler request came from CPA's Codex Live path.
@@ -161,12 +178,14 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 
 	if len(matching) == 0 {
 		if config.FailClosed {
-			return pluginapi.SchedulerPickResponse{
+			resp := pluginapi.SchedulerPickResponse{
 				Handled:      true,
 				Reject:       true,
 				RejectCode:   RejectCodeLiveUnavailable,
 				RejectReason: SanitizedReasonLiveNoAuth,
-			}, true
+			}
+			s.record(resp)
+			return resp, true
 		}
 		return pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, true
 	}
@@ -180,7 +199,25 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 		s.mu.Unlock()
 		selectedID = strings.TrimSpace(matching[index].ID)
 	}
-	return pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}, true
+	resp := pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}
+	s.record(resp)
+	return resp, true
+}
+
+func (s *Selector) record(resp pluginapi.SchedulerPickResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats.LastAt = time.Now()
+	if resp.Reject {
+		s.stats.Rejects++
+		return
+	}
+	authID := strings.TrimSpace(resp.AuthID)
+	if authID == "" {
+		return
+	}
+	s.stats.Picks++
+	s.stats.LastAuthID = authID
 }
 
 // orderByAllowlist returns matching credentials in live_auth_ids order. Host candidate order is

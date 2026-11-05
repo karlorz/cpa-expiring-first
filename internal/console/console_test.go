@@ -26,7 +26,10 @@ type fakeSources struct {
 	// quota is the readings the ranking uses.
 	quota router.Quota
 	// accounts is the latest probe outcome per credential.
-	accounts []probe.Account
+	accounts   []probe.Account
+	liveConfig live.Config
+	liveStats  live.Stats
+	candidates map[string][]pluginapi.SchedulerAuthCandidate
 }
 
 func newFakeSources() *fakeSources {
@@ -71,6 +74,9 @@ func (f *fakeSources) PickStats() map[string]router.PickStat {
 }
 
 func (f *fakeSources) Candidates(ctx context.Context) (map[string][]pluginapi.SchedulerAuthCandidate, error) {
+	if f.candidates != nil {
+		return f.candidates, nil
+	}
 	return map[string][]pluginapi.SchedulerAuthCandidate{
 		"antigravity": {{ID: "antigravity-primary-account.json", Provider: "antigravity"}},
 		"claude":      {{ID: "claude-primary-account.json", Provider: "claude"}},
@@ -92,8 +98,13 @@ func (f *fakeSources) Config() router.Config {
 }
 
 func (f *fakeSources) Live() live.Config {
+	if len(f.liveConfig.AuthIDs) > 0 {
+		return f.liveConfig
+	}
 	return live.Config{AuthIDs: []string{"codex-live.json"}, Strategy: live.DefaultStrategy, FailClosed: true}
 }
+
+func (f *fakeSources) LiveStats() live.Stats { return f.liveStats }
 
 func (f *fakeSources) Refresh(ctx context.Context) error {
 	f.refreshed++
@@ -140,6 +151,9 @@ func TestStatusPageNamesCredentialsAndEmbedsPayload(t *testing.T) {
 	}
 	if !strings.Contains(body, "Routing previews") || !strings.Contains(body, "Weekly-soonest") {
 		t.Fatal("page does not explain the ranking and the previews")
+	}
+	if !strings.Contains(body, "Live Voice") || !strings.Contains(body, "not Live minutes remaining") {
+		t.Fatal("page does not explain Live Voice pool usage and scheduling")
 	}
 	if strings.Contains(body, "__EXPIRING_FIRST_BOOTSTRAP_JSON__") {
 		t.Fatal("bootstrap placeholder was not replaced")
@@ -450,6 +464,40 @@ func TestStatusViewShowsPreviewsAndCounts(t *testing.T) {
 	}
 	if !view.LiveEnabled || view.LivePoolSize != 1 {
 		t.Fatalf("live = %+v, want one configured credential", view)
+	}
+}
+
+func TestStatusViewShowsLiveVoiceSchedule(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.liveConfig = live.Config{
+		AuthIDs:    []string{"team.json", "karl.json", "alice.json"},
+		Strategy:   live.StrategyFillFirst,
+		FailClosed: true,
+	}
+	sources.liveStats = live.Stats{Picks: 3, LastAuthID: "team.json", LastAt: now}
+	sources.candidates = map[string][]pluginapi.SchedulerAuthCandidate{
+		"codex": {
+			{ID: "karl.json", Provider: "codex", Priority: 99, Attributes: map[string]string{"disabled": "true"}},
+			{ID: "alice.json", Provider: "codex", Priority: 98, Attributes: map[string]string{"unavailable": "true"}},
+			{ID: "team.json", Provider: "codex", Priority: 100},
+		},
+	}
+
+	view := handler.statusView(context.Background())
+	if !view.Live.Enabled || view.Live.PoolSize != 3 || !view.Live.FailClosed {
+		t.Fatalf("live = %+v, want a configured three-account fill-first pool", view.Live)
+	}
+	if view.Live.NextAuthID != "team.json" || view.Live.LastAuthID != "team.json" || view.Live.Picks != 3 {
+		t.Fatalf("live usage = %+v, want Team as next and last pick", view.Live)
+	}
+	if len(view.Live.Accounts) != 3 {
+		t.Fatalf("accounts = %+v, want allowlist order", view.Live.Accounts)
+	}
+	if view.Live.Accounts[0].AuthID != "team.json" || !view.Live.Accounts[0].NextPick || !view.Live.Accounts[0].LastSelected {
+		t.Fatalf("first account = %+v, want Team as next and last pick", view.Live.Accounts[0])
+	}
+	if view.Live.Accounts[1].Eligible || view.Live.Accounts[1].Reason != "Account disabled" {
+		t.Fatalf("second account = %+v, want Karl disabled", view.Live.Accounts[1])
 	}
 }
 

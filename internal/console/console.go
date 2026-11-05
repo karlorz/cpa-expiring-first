@@ -73,6 +73,8 @@ type Sources interface {
 	Config() router.Config
 	// Live describes the active Live Voice configuration.
 	Live() live.Config
+	// LiveStats returns Live Voice pick usage recorded by this plugin.
+	LiveStats() live.Stats
 	// Refresh runs one probe cycle.
 	Refresh(ctx context.Context) error
 	// Enabled reports that the plugin is loaded and its routes are registered. It is not proof
@@ -118,7 +120,7 @@ func Resources() []pluginapi.ResourceRoute {
 		{
 			Path:        ResourcePath,
 			Menu:        "Expiring First",
-			Description: "Quota windows, routing previews and pick counts for the expiring-first scheduler.",
+			Description: "Live Voice pool, weekly-soonest quota windows, routing previews and pick counts for the expiring-first scheduler.",
 		},
 		{
 			Path:        DataResourcePath,
@@ -254,6 +256,7 @@ type StatusView struct {
 	LiveEnabled   bool            `json:"live_enabled"`
 	LivePoolSize  int             `json:"live_pool_size"`
 	LiveStrategy  string          `json:"live_strategy"`
+	Live          LiveView        `json:"live"`
 	Pins          []PinView       `json:"pins"`
 	Quota         []QuotaView     `json:"quota"`
 	Previews      []PreviewView   `json:"previews"`
@@ -270,6 +273,21 @@ type StatusView struct {
 	PicksHandled int64     `json:"picks_handled"`
 	PicksRanked  int64     `json:"picks_ranked"`
 	GeneratedAt  time.Time `json:"generated_at"`
+}
+
+// LiveView is Codex Live/Realtime pool usage and fill-first scheduling. Weekly and five-hour
+// text quota is not Live remaining and is not included here.
+type LiveView struct {
+	Enabled    bool           `json:"enabled"`
+	Strategy   string         `json:"strategy"`
+	FailClosed bool           `json:"fail_closed"`
+	PoolSize   int            `json:"pool_size"`
+	Picks      int64          `json:"picks"`
+	Rejects    int64          `json:"rejects"`
+	LastAuthID string         `json:"last_auth_id,omitempty"`
+	LastAt     *time.Time     `json:"last_picked_at,omitempty"`
+	NextAuthID string         `json:"next_auth_id,omitempty"`
+	Accounts   []live.PoolRow `json:"accounts"`
 }
 
 func (h *Handler) pinsView() []PinView {
@@ -391,7 +409,7 @@ func windowName(minutes float64) string {
 // previewRoutes builds the routing previews from the configured preview_models plus the pins.
 // Pins exist only for routes the plugin routed real traffic for, so the page never invents a
 // provider or model that this deployment does not use.
-func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
+func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthCandidate) []PreviewView {
 	now := h.now().UTC()
 
 	routes := make(map[string]*PreviewView)
@@ -426,12 +444,6 @@ func (h *Handler) previewRoutes(ctx context.Context) []PreviewView {
 		return views[i].Model < views[j].Model
 	})
 
-	// One host listing serves every provider; a failed listing leaves the previews unknown
-	// rather than failing the page.
-	byProvider, errCandidates := h.sources.Candidates(ctx)
-	if errCandidates != nil {
-		byProvider = nil
-	}
 	pins := h.sources.Pins()
 	quota := h.sources.Quota()
 	cfg := h.sources.Config()
@@ -505,7 +517,11 @@ func (h *Handler) pickCounts() []PickCountView {
 func (h *Handler) statusView(ctx context.Context) StatusView {
 	liveConfig := h.sources.Live()
 	quota := h.quotaView(ctx)
-	previews := h.previewRoutes(ctx)
+	byProvider, errCandidates := h.sources.Candidates(ctx)
+	if errCandidates != nil {
+		byProvider = nil
+	}
+	previews := h.previewRoutes(byProvider)
 	counts := h.pickCounts()
 	readings, outcomes, succeeded, failed := h.probeCounts()
 
@@ -518,6 +534,7 @@ func (h *Handler) statusView(ctx context.Context) StatusView {
 		LiveEnabled:       liveConfig.Enabled(),
 		LivePoolSize:      len(liveConfig.AuthIDs),
 		LiveStrategy:      liveConfig.Strategy,
+		Live:              h.liveView(liveConfig, byProvider),
 		Pins:              h.pinsView(),
 		Quota:             quota,
 		Previews:          previews,
@@ -531,6 +548,35 @@ func (h *Handler) statusView(ctx context.Context) StatusView {
 	for _, count := range counts {
 		view.PicksHandled += count.Handled
 		view.PicksRanked += count.Ranked
+	}
+	return view
+}
+
+func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi.SchedulerAuthCandidate) LiveView {
+	stats := h.sources.LiveStats()
+	view := LiveView{
+		Enabled:    config.Enabled(),
+		Strategy:   config.Strategy,
+		FailClosed: config.FailClosed,
+		PoolSize:   len(config.AuthIDs),
+		Picks:      stats.Picks,
+		Rejects:    stats.Rejects,
+		LastAuthID: stats.LastAuthID,
+	}
+	if !stats.LastAt.IsZero() {
+		pickedAt := stats.LastAt.UTC()
+		view.LastAt = &pickedAt
+	}
+	var candidates []pluginapi.SchedulerAuthCandidate
+	if byProvider != nil {
+		candidates = byProvider[live.Provider]
+	}
+	view.Accounts = live.DescribePool(config, candidates, stats.LastAuthID, h.now())
+	for _, account := range view.Accounts {
+		if account.NextPick {
+			view.NextAuthID = account.AuthID
+			break
+		}
 	}
 	return view
 }

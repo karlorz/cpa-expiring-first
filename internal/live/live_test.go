@@ -90,6 +90,10 @@ func TestLiveFillFirstFollowsAllowlistOrder(t *testing.T) {
 	if !handled || !resp.Handled || resp.AuthID != "live-karl" {
 		t.Fatalf("Pick() = %+v handled=%v, want live-karl from live_auth_ids order", resp, handled)
 	}
+	stats := selector.Stats()
+	if stats.Picks != 1 || stats.LastAuthID != "live-karl" || stats.LastAt.IsZero() {
+		t.Fatalf("Stats() = %+v, want one pick of live-karl", stats)
+	}
 }
 
 func TestLiveRequestRoundRobinRotates(t *testing.T) {
@@ -112,6 +116,10 @@ func TestLiveRequestFailClosedRejectsWithoutAllowlistedCredential(t *testing.T) 
 	resp, handled := selector.Pick(codexRequest(Model, pluginapi.SchedulerAuthCandidate{ID: "other"}))
 	if !handled || !resp.Handled || !resp.Reject || resp.RejectCode != RejectCodeLiveUnavailable {
 		t.Fatalf("Pick() = %+v handled=%v, want a fail-closed reject", resp, handled)
+	}
+	stats := selector.Stats()
+	if stats.Rejects != 1 || stats.Picks != 0 || stats.LastAuthID != "" {
+		t.Fatalf("Stats() = %+v, want one reject and no successful pick", stats)
 	}
 }
 

@@ -96,6 +96,13 @@ const StatusHTML = `<!doctype html>
   </section>
 
   <section class="card">
+    <h2>Live Voice</h2>
+    <p class="muted">Fill-first over live_auth_ids for Codex Live/Realtime. This is not weekly-soonest text ranking. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
+    <div class="grid" id="live-metrics"></div>
+    <div id="live-order" style="margin-top:0.75rem"></div>
+  </section>
+
+  <section class="card">
     <h2>Probe controls</h2>
     <p class="muted">Reloading the page and the automatic refresh both read the cached snapshot; neither starts a probe. Running a probe needs the host management key, which stays in this page's memory only.</p>
     <div class="toolbar" style="margin-top:0.6rem">
@@ -115,7 +122,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Schedule outcome</h2>
-    <p class="muted">Live account list ranked weekly-soonest, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
+    <p class="muted">Current account list ranked weekly-soonest for ordinary traffic, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. Codex Live/Realtime uses the Live Voice section, not this ranking. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
     <div id="account-order"></div>
   </section>
 
@@ -133,7 +140,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Picks served by this plugin</h2>
-    <p class="muted">Scheduler decisions handled by this plugin. Successful upstream responses can be verified in the host request logs.</p>
+    <p class="muted">Weekly-soonest scheduler decisions handled by this plugin. Live Voice picks are counted in the Live Voice section. Successful upstream responses can be verified in the host request logs.</p>
     <div id="pick-counts"></div>
   </section>
 </div>
@@ -249,6 +256,33 @@ const StatusHTML = `<!doctype html>
       metric('Picks handled', data.picks_handled || 0)
     ];
     replace(metrics, metricNodes);
+
+    var live = data.live || {};
+    replace(document.getElementById('live-metrics'), [
+      metric('Pool', live.enabled ? String(live.pool_size || 0) + ' (' + (live.strategy || 'fill-first') + ')' : 'not configured'),
+      metric('Fail closed', live.enabled ? (live.fail_closed ? 'yes' : 'no') : '—'),
+      metric('Next pick', live.next_auth_id || (live.enabled ? 'none eligible' : '—')),
+      metric('Last pick', live.last_auth_id || 'none yet'),
+      metric('Last picked at', live.last_picked_at ? new Date(live.last_picked_at).toLocaleString() : '—'),
+      metric('Picks / rejects', (live.picks || 0) + ' / ' + (live.rejects || 0))
+    ]);
+    var liveRows = (live.accounts || []).map(function (account) {
+      var result = '#' + account.order;
+      if (account.next_pick) { result += ' · next pick'; }
+      if (account.last_selected) { result += ' · last selected'; }
+      var state;
+      if (!account.present) { state = el('span', 'pill warn', 'missing'); }
+      else if (account.disabled) { state = el('span', 'pill bad', 'disabled'); }
+      else if (account.unavailable) { state = el('span', 'pill warn', 'unavailable'); }
+      else if (account.cooling) { state = el('span', 'pill warn', 'cooldown'); }
+      else { state = el('span', 'pill ok', 'eligible'); }
+      return [result, account.auth_id, state, account.account_priority, account.reason];
+    });
+    replace(document.getElementById('live-order'), [
+      live.enabled
+        ? table(['Order / outcome', 'Credential', 'Host state', 'Account priority', 'Reason'], liveRows)
+        : el('div', 'empty', 'No live_auth_ids configured; Live stays with the host scheduler.')
+    ]);
 
     document.getElementById('serving-note').textContent = (data.picks_handled || 0) > 0
       ? 'This plugin has answered ' + data.picks_handled + ' picks (decided by weekly-soonest ranking: ' + (data.picks_ranked || 0) + '). Counters only count picks this plugin handled; the host may route other traffic elsewhere.'

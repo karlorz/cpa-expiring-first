@@ -1,3 +1,7 @@
+## v0.3.9
+
+- Show Live Voice pool usage and fill-first scheduling on the status page: `live_auth_ids` order, host eligibility, next/last pick, and pick/reject counts. Weekly-soonest Schedule outcome stays text quota and is no longer labelled as the Live account list.
+
 ## v0.3.8
 
 - Live Voice fill-first follows the configured `live_auth_ids` order. Host credential priority, including weekly-soonest integers from `write_priorities`, no longer chooses which allowlisted Live account is tried first.

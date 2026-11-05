@@ -741,6 +741,7 @@ func previewCandidates(files []pluginapi.HostAuthFileEntry) map[string][]plugina
 		byProvider[provider] = append(byProvider[provider], pluginapi.SchedulerAuthCandidate{
 			ID: file.ID, Provider: provider, Priority: file.Priority, Status: file.Status,
 			Attributes: map[string]string{
+				"account_priority": strconv.Itoa(file.Priority),
 				"websockets":       strconv.FormatBool(file.Websockets),
 				"disabled":         strconv.FormatBool(file.Disabled),
 				"unavailable":      strconv.FormatBool(file.Unavailable),
@@ -754,6 +755,8 @@ func previewCandidates(files []pluginapi.HostAuthFileEntry) map[string][]plugina
 func (consoleSources) Config() router.Config { return scheduler.Configuration() }
 
 func (consoleSources) Live() live.Config { return liveSelector.Config() }
+
+func (consoleSources) LiveStats() live.Stats { return liveSelector.Stats() }
 
 func (consoleSources) Refresh(ctx context.Context) error {
 	before := probeWorker.Snapshot().At
