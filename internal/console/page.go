@@ -97,7 +97,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Live Voice</h2>
-    <p class="muted">Fill-first over live_auth_ids for Codex Live/Realtime. This is not weekly-soonest text ranking. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
+    <p class="muted">Live next pick follows live_auth_ids among host-enabled credentials. Host fill-first is CPA account priority (larger = higher); write_priorities sets exhausted weekly text accounts to 0, so those rows can still be Live-eligible while fill-first skips them. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
     <div class="grid" id="live-metrics"></div>
     <div id="live-order" style="margin-top:0.75rem"></div>
   </section>
@@ -261,20 +261,25 @@ const StatusHTML = `<!doctype html>
     replace(document.getElementById('live-metrics'), [
       metric('Pool', live.enabled ? String(live.pool_size || 0) + ' (' + (live.strategy || 'fill-first') + ')' : 'not configured'),
       metric('Fail closed', live.enabled ? (live.fail_closed ? 'yes' : 'no') : '—'),
-      metric('Next pick', live.next_auth_id || (live.enabled ? 'none eligible' : '—')),
+      metric('Next Live pick', live.next_auth_id || (live.enabled ? 'none eligible' : '—')),
+      metric('Host fill-first', live.fill_first_auth_id || (live.enabled ? 'none eligible' : '—')),
       metric('Last pick', live.last_auth_id || 'none yet'),
       metric('Last picked at', live.last_picked_at ? new Date(live.last_picked_at).toLocaleString() : '—'),
       metric('Picks / rejects', (live.picks || 0) + ' / ' + (live.rejects || 0))
     ]);
     var liveRows = (live.accounts || []).map(function (account) {
       var result = '#' + account.order;
-      if (account.next_pick) { result += ' · next pick'; }
+      if (account.next_pick) { result += ' · next Live pick'; }
+      if (account.fill_first_next) { result += ' · host fill-first'; }
       if (account.last_selected) { result += ' · last selected'; }
       var state;
       if (!account.present) { state = el('span', 'pill warn', 'missing'); }
       else if (account.disabled) { state = el('span', 'pill bad', 'disabled'); }
       else if (account.unavailable) { state = el('span', 'pill warn', 'unavailable'); }
       else if (account.cooling) { state = el('span', 'pill warn', 'cooldown'); }
+      else if (account.fill_first_next) { state = el('span', 'pill ok', 'fill-first'); }
+      else if (account.next_pick) { state = el('span', 'pill info', 'live next'); }
+      else if (account.eligible && !account.fill_first_next) { state = el('span', 'pill warn', 'priority skipped'); }
       else { state = el('span', 'pill ok', 'eligible'); }
       return [result, account.auth_id, state, account.account_priority, account.reason];
     });

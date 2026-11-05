@@ -155,6 +155,9 @@ func TestStatusPageNamesCredentialsAndEmbedsPayload(t *testing.T) {
 	if !strings.Contains(body, "Live Voice") || !strings.Contains(body, "not Live minutes remaining") {
 		t.Fatal("page does not explain Live Voice pool usage and scheduling")
 	}
+	if !strings.Contains(body, "Host fill-first") || !strings.Contains(body, "next Live pick") {
+		t.Fatal("page does not separate Live next pick from host fill-first")
+	}
 	if strings.Contains(body, "__EXPIRING_FIRST_BOOTSTRAP_JSON__") {
 		t.Fatal("bootstrap placeholder was not replaced")
 	}
@@ -498,6 +501,29 @@ func TestStatusViewShowsLiveVoiceSchedule(t *testing.T) {
 	}
 	if view.Live.Accounts[1].Eligible || view.Live.Accounts[1].Reason != "Account disabled" {
 		t.Fatalf("second account = %+v, want Karl disabled", view.Live.Accounts[1])
+	}
+}
+
+func TestStatusViewSeparatesLiveNextFromHostFillFirst(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.liveConfig = live.Config{
+		AuthIDs:    []string{"team.json", "karl.json", "alice.json"},
+		Strategy:   live.StrategyFillFirst,
+		FailClosed: true,
+	}
+	sources.candidates = map[string][]pluginapi.SchedulerAuthCandidate{
+		"codex": {
+			{ID: "team.json", Provider: "codex", Priority: 0},
+			{ID: "karl.json", Provider: "codex", Priority: 0},
+			{ID: "alice.json", Provider: "codex", Priority: 99},
+		},
+	}
+	view := handler.statusView(context.Background())
+	if view.Live.NextAuthID != "team.json" {
+		t.Fatalf("next Live = %q, want team.json", view.Live.NextAuthID)
+	}
+	if view.Live.FillFirstAuthID != "alice.json" {
+		t.Fatalf("host fill-first = %q, want alice.json", view.Live.FillFirstAuthID)
 	}
 }
 

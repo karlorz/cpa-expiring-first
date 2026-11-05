@@ -1,3 +1,7 @@
+## v0.3.10
+
+- Separate Live next pick (`live_auth_ids` among host-enabled credentials) from CPA host fill-first (account priority) on the status page. Priority 0 from weekly-text ranking is no longer shown as a green Eligible next pick.
+
 ## v0.3.9
 
 - Show Live Voice pool usage and fill-first scheduling on the status page: `live_auth_ids` order, host eligibility, next/last pick, and pick/reject counts. Weekly-soonest Schedule outcome stays text quota and is no longer labelled as the Live account list.

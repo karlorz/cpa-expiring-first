@@ -10,17 +10,18 @@ import (
 
 // PoolRow is one live_auth_ids credential as shown on the status page.
 type PoolRow struct {
-	Order        int    `json:"order"`
-	AuthID       string `json:"auth_id"`
-	Present      bool   `json:"present"`
-	Disabled     bool   `json:"disabled"`
-	Unavailable  bool   `json:"unavailable"`
-	Cooling      bool   `json:"cooling"`
-	Eligible     bool   `json:"eligible"`
-	NextPick     bool   `json:"next_pick"`
-	LastSelected bool   `json:"last_selected"`
-	Priority     int    `json:"account_priority"`
-	Reason       string `json:"reason"`
+	Order         int    `json:"order"`
+	AuthID        string `json:"auth_id"`
+	Present       bool   `json:"present"`
+	Disabled      bool   `json:"disabled"`
+	Unavailable   bool   `json:"unavailable"`
+	Cooling       bool   `json:"cooling"`
+	Eligible      bool   `json:"eligible"`
+	NextPick      bool   `json:"next_pick"`
+	FillFirstNext bool   `json:"fill_first_next"`
+	LastSelected  bool   `json:"last_selected"`
+	Priority      int    `json:"account_priority"`
+	Reason        string `json:"reason"`
 }
 
 // DescribePool returns live_auth_ids in configured fill-first order, joined with host candidate
@@ -47,7 +48,7 @@ func DescribePool(config Config, candidates []pluginapi.SchedulerAuthCandidate, 
 			row.AuthID = id
 		}
 		row.Priority = accountPriority(candidate)
-		row.Disabled = parseBoolAttr(candidate.Attributes["disabled"])
+		row.Disabled = parseBoolAttr(candidate.Attributes["disabled"]) || isDisabledStatus(candidate.Status)
 		row.Unavailable = parseBoolAttr(candidate.Attributes["unavailable"])
 		retryAfter, cooling := cooldownUntil(candidate.Attributes["next_retry_after"], now)
 		row.Cooling = cooling
@@ -69,7 +70,42 @@ func DescribePool(config Config, candidates []pluginapi.SchedulerAuthCandidate, 
 		}
 		rows = append(rows, row)
 	}
+	markFillFirstNext(rows)
 	return rows
+}
+
+func markFillFirstNext(rows []PoolRow) {
+	maxPriority := -1
+	for _, row := range rows {
+		if row.Eligible && row.Priority > maxPriority {
+			maxPriority = row.Priority
+		}
+	}
+	if maxPriority < 0 {
+		return
+	}
+	marked := false
+	for i := range rows {
+		if !rows[i].Eligible {
+			continue
+		}
+		if rows[i].Priority == maxPriority && !marked {
+			rows[i].FillFirstNext = true
+			marked = true
+		}
+		if rows[i].Priority < maxPriority && rows[i].Reason == "Eligible" {
+			rows[i].Reason = "Live-eligible; CPA fill-first skips this while a higher-priority pool account exists"
+		}
+	}
+}
+
+func isDisabledStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "disabled", "statusdisabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func findAllowlistedCandidate(candidates []pluginapi.SchedulerAuthCandidate, authID string) (pluginapi.SchedulerAuthCandidate, bool) {

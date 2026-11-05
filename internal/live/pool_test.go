@@ -48,3 +48,35 @@ func TestDescribePoolMarksCooldownAndSkipsToNextEligible(t *testing.T) {
 		t.Fatalf("second row = %+v, want next eligible pick", rows[1])
 	}
 }
+
+func TestDescribePoolSeparatesLiveNextFromHostFillFirst(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	rows := DescribePool(Config{AuthIDs: []string{"team.json", "karl.json", "alice.json"}}, []pluginapi.SchedulerAuthCandidate{
+		{ID: "team.json", Provider: "codex", Priority: 0},
+		{ID: "karl.json", Provider: "codex", Priority: 0},
+		{ID: "alice.json", Provider: "codex", Priority: 99},
+	}, "", now)
+	if !rows[0].Eligible || !rows[0].NextPick || rows[0].FillFirstNext {
+		t.Fatalf("team = %+v, want Live next pick and not host fill-first", rows[0])
+	}
+	if rows[1].NextPick || rows[1].FillFirstNext {
+		t.Fatalf("karl = %+v, want neither next pick", rows[1])
+	}
+	if !rows[2].FillFirstNext || rows[2].NextPick {
+		t.Fatalf("alice = %+v, want host fill-first next", rows[2])
+	}
+}
+
+func TestDescribePoolTreatsStatusDisabledAsDisabled(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	rows := DescribePool(Config{AuthIDs: []string{"first.json", "second.json"}}, []pluginapi.SchedulerAuthCandidate{
+		{ID: "first.json", Status: "disabled"},
+		{ID: "second.json"},
+	}, "", now)
+	if !rows[0].Disabled || rows[0].Eligible || rows[0].NextPick {
+		t.Fatalf("first = %+v, want status-disabled and skipped", rows[0])
+	}
+	if !rows[1].NextPick {
+		t.Fatalf("second = %+v, want next pick", rows[1])
+	}
+}

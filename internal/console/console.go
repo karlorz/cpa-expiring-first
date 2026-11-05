@@ -278,16 +278,17 @@ type StatusView struct {
 // LiveView is Codex Live/Realtime pool usage and fill-first scheduling. Weekly and five-hour
 // text quota is not Live remaining and is not included here.
 type LiveView struct {
-	Enabled    bool           `json:"enabled"`
-	Strategy   string         `json:"strategy"`
-	FailClosed bool           `json:"fail_closed"`
-	PoolSize   int            `json:"pool_size"`
-	Picks      int64          `json:"picks"`
-	Rejects    int64          `json:"rejects"`
-	LastAuthID string         `json:"last_auth_id,omitempty"`
-	LastAt     *time.Time     `json:"last_picked_at,omitempty"`
-	NextAuthID string         `json:"next_auth_id,omitempty"`
-	Accounts   []live.PoolRow `json:"accounts"`
+	Enabled         bool           `json:"enabled"`
+	Strategy        string         `json:"strategy"`
+	FailClosed      bool           `json:"fail_closed"`
+	PoolSize        int            `json:"pool_size"`
+	Picks           int64          `json:"picks"`
+	Rejects         int64          `json:"rejects"`
+	LastAuthID      string         `json:"last_auth_id,omitempty"`
+	LastAt          *time.Time     `json:"last_picked_at,omitempty"`
+	NextAuthID      string         `json:"next_auth_id,omitempty"`
+	FillFirstAuthID string         `json:"fill_first_auth_id,omitempty"`
+	Accounts        []live.PoolRow `json:"accounts"`
 }
 
 func (h *Handler) pinsView() []PinView {
@@ -573,9 +574,11 @@ func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi
 	}
 	view.Accounts = live.DescribePool(config, candidates, stats.LastAuthID, h.now())
 	for _, account := range view.Accounts {
-		if account.NextPick {
+		if account.NextPick && view.NextAuthID == "" {
 			view.NextAuthID = account.AuthID
-			break
+		}
+		if account.FillFirstNext && view.FillFirstAuthID == "" {
+			view.FillFirstAuthID = account.AuthID
 		}
 	}
 	return view
