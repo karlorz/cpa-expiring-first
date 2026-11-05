@@ -1,3 +1,7 @@
+## v0.3.8
+
+- Live Voice fill-first follows the configured `live_auth_ids` order. Host credential priority, including weekly-soonest integers from `write_priorities`, no longer chooses which allowlisted Live account is tried first.
+
 ## v0.3.7
 
 - Name credentials by CPA's own credential ID in the console page and every JSON route, the same ID the management API uses, instead of the hashed `antigravity-…`/`acct-…` labels. Rename credentials if a name should stay private: the status page and its `/data` route are public.

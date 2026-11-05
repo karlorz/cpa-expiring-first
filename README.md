@@ -78,9 +78,9 @@ Both modes record the serving account as the route's pin, so sticky routing cont
 
 Codex Live/Realtime traffic (`gpt-live-1-codex`) is decided by its own allowlist, ahead of the weekly-soonest ranking:
 
-- Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic.
+- Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic, in fill-first order.
 - A Live request is never answered by the weekly-soonest ranking. With **no** `live_auth_ids` configured, the plugin leaves the request unhandled, so CLIProxyAPI's built-in scheduler decides, exactly as if this plugin were not installed.
-- With an allowlist, the plugin picks from the matching candidates: `fill-first`.
+- With an allowlist, the plugin picks the first matching candidate in `live_auth_ids` order (`fill-first`). Host credential priority, including integers written by `write_priorities`, does not change that order.
 - `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no allowlisted credential is available; `fail_closed: false` delegates to the built-in scheduler instead.
 
 This is the same classification and selection as [karlorz/cpa-live-voice](https://github.com/karlorz/cpa-live-voice), folded into this plugin so the two no longer have to run together.

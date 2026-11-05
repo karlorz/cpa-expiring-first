@@ -171,6 +171,7 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 		return pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, true
 	}
 
+	matching = orderByAllowlist(matching, config.AuthIDs)
 	selectedID := strings.TrimSpace(matching[0].ID)
 	if config.Strategy == StrategyRoundRobin {
 		s.mu.Lock()
@@ -180,6 +181,45 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 		selectedID = strings.TrimSpace(matching[index].ID)
 	}
 	return pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}, true
+}
+
+// orderByAllowlist returns matching credentials in live_auth_ids order. Host candidate order is
+// weekly-soonest text ranking and is not the Live fill-first sequence.
+func orderByAllowlist(matching []pluginapi.SchedulerAuthCandidate, authIDs []string) []pluginapi.SchedulerAuthCandidate {
+	if len(matching) <= 1 || len(authIDs) == 0 {
+		return matching
+	}
+	used := make(map[string]struct{}, len(matching))
+	out := make([]pluginapi.SchedulerAuthCandidate, 0, len(matching))
+	for _, want := range authIDs {
+		allow := map[string]struct{}{strings.TrimSpace(want): {}}
+		for _, candidate := range matching {
+			id := strings.TrimSpace(candidate.ID)
+			if id == "" {
+				continue
+			}
+			if _, seen := used[id]; seen {
+				continue
+			}
+			if candidateMatchesAllowlist(candidate, allow) {
+				out = append(out, candidate)
+				used[id] = struct{}{}
+				break
+			}
+		}
+	}
+	for _, candidate := range matching {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		if _, seen := used[id]; seen {
+			continue
+		}
+		out = append(out, candidate)
+		used[id] = struct{}{}
+	}
+	return out
 }
 
 func candidateMatchesAllowlist(candidate pluginapi.SchedulerAuthCandidate, allowlist map[string]struct{}) bool {

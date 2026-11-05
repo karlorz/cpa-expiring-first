@@ -571,7 +571,7 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "preview_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Pinned preview routes as {provider, model} objects. Default empty: observed scheduler picks only."},
 		{Name: "probe_antigravity_claude_gpt", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only."},
 		{Name: "write_priorities", Type: pluginapi.ConfigFieldTypeBoolean, Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher) so CPA fill-first follows that queue. Default true."},
-		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic. Default empty: host built-in scheduler."},
+		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Default empty: host built-in scheduler."},
 		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true."},
 	}
 }

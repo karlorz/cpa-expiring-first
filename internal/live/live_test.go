@@ -73,6 +73,25 @@ func TestLiveRequestPicksAllowlistedCredential(t *testing.T) {
 	}
 }
 
+func TestLiveFillFirstFollowsAllowlistOrder(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{
+		AuthIDs:    []string{"live-karl", "live-alice", "live-team"},
+		Strategy:   StrategyFillFirst,
+		FailClosed: true,
+	})
+
+	req := codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "live-alice", Priority: 100},
+		pluginapi.SchedulerAuthCandidate{ID: "live-team", Priority: 99},
+		pluginapi.SchedulerAuthCandidate{ID: "live-karl", Priority: 98},
+	)
+	resp, handled := selector.Pick(req)
+	if !handled || !resp.Handled || resp.AuthID != "live-karl" {
+		t.Fatalf("Pick() = %+v handled=%v, want live-karl from live_auth_ids order", resp, handled)
+	}
+}
+
 func TestLiveRequestRoundRobinRotates(t *testing.T) {
 	selector := NewSelector()
 	selector.Configure(Config{AuthIDs: []string{"live-a", "live-b"}, Strategy: StrategyRoundRobin})
