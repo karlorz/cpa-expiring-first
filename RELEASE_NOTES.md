@@ -1,3 +1,20 @@
+## v0.3.14
+
+- Probe FreeTier WorkBuddy (`workbuddyglobal`, `workbuddycn`) credit packages in-process and rank them on Expiring First. Remaining/total credits map to used percent; empty packs such as `0 / 440` count as exhausted (priority 0).
+- `prefer_used` (default true) ranks WorkBuddy accounts that already have usage ahead of unused 0% used accounts, then still uses soonest package expiry inside each group. Set `prefer_used: false` for expiry-only order.
+
+## v0.3.13
+
+- Show a bounded **Recent Live decisions** audit on the Live Voice page (last 32 picks, rejects, and skips, with credential IDs). Persist it in `live_state_file`. This is the table from the old `cpa-live-voice` page, now on the scheduler that is actually loaded.
+
+## v0.3.12
+
+- Persist **in use** / **last used** and remembered Live `usage_limit_reached` deadlines across reloads (`live_state_file`). Keep those deadlines after the host listing drops StatusMessage. Scan `live_access_log` for a later `POST /v1/realtime/calls` 429 and skip that account until the weekly Live window. Show last skips on the status page.
+
+## v0.3.11
+
+- Skip Live `usage_limit_reached` and host-cooling `live_auth_ids` credentials, then pick the next allowlisted account. Mark **in use** (last successful Live pick within two minutes) and **last used** on the status page. Log the Live pick and each sanitized skip. Do not clear Live-pool cooldowns from Codex text quota probes.
+
 ## v0.3.10
 
 - Separate Live next pick (`live_auth_ids` among host-enabled credentials) from CPA host fill-first (account priority) on the status page. Priority 0 from weekly-text ranking is no longer shown as a green Eligible next pick.

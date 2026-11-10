@@ -329,3 +329,30 @@ func TestRefreshFailureRetainsEvidenceInPublishedMemory(t *testing.T) {
 		t.Fatal("published evidence missing or re-aged")
 	}
 }
+
+func TestRefreshMapsFreetierWorkBuddyCredits(t *testing.T) {
+	fake := &fakeHost{
+		files: []host.AuthFile{{ID: "workbuddyglobal-a.json", AuthIndex: "idx-wb", Provider: "workbuddyglobal"}},
+		auth: map[string]json.RawMessage{
+			"idx-wb": json.RawMessage(`{"auth":{"accessToken":"tok","domain":"www.workbuddy.ai"},"account":{"uid":"u-1"}}`),
+		},
+		httpDo: func(req host.HTTPRequest) (host.HTTPResponse, error) {
+			if !strings.Contains(req.URL, "get-user-resource") {
+				return host.HTTPResponse{}, errors.New("unexpected url")
+			}
+			return host.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"PackageName":"基础套餐","CycleCapacitySize":350,"CycleCapacityRemain":235,"CycleCapacityUsed":115,"CycleEndTime":"2026-11-20 12:00:00"}]}}}}`)}, nil
+		},
+	}
+	memory := router.NewMemoryQuota()
+	snapshot := NewWorker(memory).Refresh(context.Background(), fake)
+	if len(snapshot.Accounts) != 1 || snapshot.Accounts[0].Error != "" {
+		t.Fatalf("accounts = %+v", snapshot.Accounts)
+	}
+	account, okAccount := memory.Load()["workbuddyglobal-a.json"]
+	if !okAccount || len(account.Windows) != 1 {
+		t.Fatalf("quota = %+v", memory.Load())
+	}
+	if account.Windows[0].UsedPercent < 32 || account.Windows[0].UsedPercent > 34 {
+		t.Fatalf("used = %v, want ~32.86", account.Windows[0].UsedPercent)
+	}
+}

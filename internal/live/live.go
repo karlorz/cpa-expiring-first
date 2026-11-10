@@ -67,6 +67,46 @@ type Stats struct {
 	Rejects    int64
 	LastAuthID string
 	LastAt     time.Time
+	// Limits is auth ID alias → Live usage-limit reset, copied for the status page.
+	Limits map[string]time.Time
+	// Skips is the sanitized skip list from the latest Live pick.
+	Skips []Skip
+	// Decisions is the bounded recent Live audit log, newest first.
+	Decisions []Decision
+}
+
+// DecisionOutcome is one Live scheduler result in the audit log.
+type DecisionOutcome string
+
+const (
+	OutcomePicked    DecisionOutcome = "picked"
+	OutcomeRejected  DecisionOutcome = "rejected"
+	OutcomeDelegated DecisionOutcome = "delegated"
+)
+
+// MaxDecisionHistory is the number of Live decisions kept for the status page and live_state_file.
+const MaxDecisionHistory = 32
+
+// Decision is one sanitized Live routing decision. It holds credential IDs and skip reasons, not
+// tokens, status-message JSON, or SDP.
+type Decision struct {
+	ID       int64           `json:"id"`
+	At       time.Time       `json:"at"`
+	Outcome  DecisionOutcome `json:"outcome"`
+	AuthID   string          `json:"auth_id,omitempty"`
+	Matching int             `json:"matching"`
+	Ready    int             `json:"ready"`
+	Skips    []Skip          `json:"skips,omitempty"`
+	Reason   string          `json:"reason,omitempty"`
+}
+
+// Snapshot is last-used Live pick state plus remembered usage-limit deadlines, saved across
+// plugin reloads. It never includes tokens or status message text.
+type Snapshot struct {
+	LastAuthID string
+	LastAt     time.Time
+	Limits     map[string]time.Time
+	Decisions  []Decision
 }
 
 // Selector picks a credential for Live requests.
@@ -74,6 +114,20 @@ type Selector struct {
 	mu     sync.Mutex
 	config Config
 	stats  Stats
+	// hostLimits are usage_limit_reached deadlines from the latest host listing.
+	hostLimits map[string]time.Time
+	// remembered are Live usage-limit deadlines kept after the host listing drops them.
+	remembered map[string]time.Time
+	// retries are host next_retry_after deadlines, including model-level Live cooldowns when
+	// the host still offers the credential because Live selection omits the model.
+	retries map[string]time.Time
+	// blocked is alias → disabled/unavailable reason from the host listing.
+	blocked map[string]string
+	// lastSkips is the sanitized skip list from the latest Live pick.
+	lastSkips []Skip
+	// decisions is the bounded Live audit log, oldest first.
+	decisions   []Decision
+	decisionSeq int64
 	// rrIndex is the next round-robin position across matching credentials.
 	rrIndex uint64
 }
@@ -104,7 +158,88 @@ func (s *Selector) Config() Config {
 func (s *Selector) Stats() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.stats
+	out := s.stats
+	now := time.Now()
+	out.Limits = s.activeLimitsLocked(now)
+	if len(s.lastSkips) > 0 {
+		out.Skips = make([]Skip, len(s.lastSkips))
+		copy(out.Skips, s.lastSkips)
+	}
+	out.Decisions = copyDecisionsNewestFirst(s.decisions)
+	return out
+}
+
+// Snapshot returns last-used pick state and remembered Live limits for persistence.
+func (s *Selector) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := Snapshot{LastAuthID: s.stats.LastAuthID, LastAt: s.stats.LastAt}
+	if limits := copyFutureLimits(s.remembered, time.Now()); len(limits) > 0 {
+		out.Limits = limits
+	}
+	if len(s.decisions) > 0 {
+		out.Decisions = append([]Decision(nil), s.decisions...)
+	}
+	return out
+}
+
+// Restore reapplies a saved last-used pick and remembered Live limits. Host listing state is
+// not restored; the next Live pick refreshes that.
+func (s *Selector) Restore(snapshot Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id := strings.TrimSpace(snapshot.LastAuthID); id != "" {
+		s.stats.LastAuthID = id
+		s.stats.LastAt = snapshot.LastAt
+	}
+	if s.remembered == nil {
+		s.remembered = make(map[string]time.Time)
+	}
+	mergeLimitMap(s.remembered, snapshot.Limits)
+	if len(snapshot.Decisions) > 0 {
+		cloned := make([]Decision, 0, len(snapshot.Decisions))
+		for _, decision := range snapshot.Decisions {
+			decision.Skips = copySkips(decision.Skips)
+			cloned = append(cloned, decision)
+		}
+		if extra := len(cloned) - MaxDecisionHistory; extra > 0 {
+			cloned = append([]Decision(nil), cloned[extra:]...)
+		}
+		s.decisions = cloned
+		s.decisionSeq = 0
+		for _, decision := range s.decisions {
+			if decision.ID > s.decisionSeq {
+				s.decisionSeq = decision.ID
+			}
+		}
+	}
+}
+
+func copyDecisionsNewestFirst(in []Decision) []Decision {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Decision, len(in))
+	for i := range in {
+		out[i] = in[len(in)-1-i]
+	}
+	return out
+}
+
+func (s *Selector) activeLimitsLocked(now time.Time) map[string]time.Time {
+	return unionFutureLimits(now, s.remembered, s.hostLimits)
+}
+
+// LastSkips returns the sanitized skip list from the latest Live pick.
+func (s *Selector) LastSkips() []Skip {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.lastSkips) == 0 {
+		return nil
+	}
+	out := make([]Skip, len(s.lastSkips))
+	copy(out, s.lastSkips)
+	return out
 }
 
 // IsLiveRequest reports whether a scheduler request came from CPA's Codex Live path.
@@ -160,6 +295,10 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 	}
 	s.mu.Lock()
 	config := s.config
+	now := time.Now()
+	limits := s.activeLimitsLocked(now)
+	retries := s.retries
+	blocked := s.blocked
 	s.mu.Unlock()
 	if !config.Enabled() {
 		return pluginapi.SchedulerPickResponse{}, false
@@ -176,7 +315,18 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 		}
 	}
 
-	if len(matching) == 0 {
+	matching = orderByAllowlist(matching, config.AuthIDs)
+	ready := make([]pluginapi.SchedulerAuthCandidate, 0, len(matching))
+	skipped := make([]Skip, 0)
+	for _, candidate := range matching {
+		if reason := exclusionReason(candidate, limits, retries, blocked, now); reason != "" {
+			skipped = append(skipped, Skip{AuthID: strings.TrimSpace(candidate.ID), Reason: reason})
+			continue
+		}
+		ready = append(ready, candidate)
+	}
+
+	if len(ready) == 0 {
 		if config.FailClosed {
 			resp := pluginapi.SchedulerPickResponse{
 				Handled:      true,
@@ -184,40 +334,76 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 				RejectCode:   RejectCodeLiveUnavailable,
 				RejectReason: SanitizedReasonLiveNoAuth,
 			}
-			s.record(resp)
+			s.record(resp, skipped, len(matching), 0)
 			return resp, true
 		}
+		s.record(pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, skipped, len(matching), 0)
 		return pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, true
 	}
 
-	matching = orderByAllowlist(matching, config.AuthIDs)
-	selectedID := strings.TrimSpace(matching[0].ID)
+	selectedID := strings.TrimSpace(ready[0].ID)
 	if config.Strategy == StrategyRoundRobin {
 		s.mu.Lock()
-		index := int(s.rrIndex % uint64(len(matching)))
+		index := int(s.rrIndex % uint64(len(ready)))
 		s.rrIndex++
 		s.mu.Unlock()
-		selectedID = strings.TrimSpace(matching[index].ID)
+		selectedID = strings.TrimSpace(ready[index].ID)
 	}
 	resp := pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}
-	s.record(resp)
+	s.record(resp, skipped, len(matching), len(ready))
 	return resp, true
 }
 
-func (s *Selector) record(resp pluginapi.SchedulerPickResponse) {
+func (s *Selector) record(resp pluginapi.SchedulerPickResponse, skipped []Skip, matching, ready int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stats.LastAt = time.Now()
-	if resp.Reject {
+	s.lastSkips = skipped
+	decision := Decision{
+		Matching: matching,
+		Ready:    ready,
+		Skips:    copySkips(skipped),
+	}
+	switch {
+	case resp.Reject:
 		s.stats.Rejects++
-		return
+		decision.Outcome = OutcomeRejected
+		decision.Reason = strings.TrimSpace(resp.RejectReason)
+	case strings.TrimSpace(resp.DelegateBuiltin) != "":
+		decision.Outcome = OutcomeDelegated
+		decision.Reason = "delegated to " + strings.TrimSpace(resp.DelegateBuiltin)
+	default:
+		authID := strings.TrimSpace(resp.AuthID)
+		if authID == "" {
+			return
+		}
+		s.stats.Picks++
+		s.stats.LastAuthID = authID
+		s.stats.LastAt = time.Now()
+		decision.Outcome = OutcomePicked
+		decision.AuthID = authID
 	}
-	authID := strings.TrimSpace(resp.AuthID)
-	if authID == "" {
-		return
+	s.appendDecisionLocked(decision)
+}
+
+func (s *Selector) appendDecisionLocked(decision Decision) {
+	s.decisionSeq++
+	decision.ID = s.decisionSeq
+	if decision.At.IsZero() {
+		decision.At = time.Now().UTC()
 	}
-	s.stats.Picks++
-	s.stats.LastAuthID = authID
+	s.decisions = append(s.decisions, decision)
+	if extra := len(s.decisions) - MaxDecisionHistory; extra > 0 {
+		s.decisions = append([]Decision(nil), s.decisions[extra:]...)
+	}
+}
+
+func copySkips(in []Skip) []Skip {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Skip, len(in))
+	copy(out, in)
+	return out
 }
 
 // orderByAllowlist returns matching credentials in live_auth_ids order. Host candidate order is

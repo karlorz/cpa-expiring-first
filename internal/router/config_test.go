@@ -28,6 +28,17 @@ func TestParseConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfigLiveStateAndAccessLog(t *testing.T) {
+	raw := "live_state_file: /var/lib/cpa/expiring-first-live.json\nlive_access_log: /CLIProxyAPI/logs/main.log\n"
+	cfg, err := ParseConfig([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveStateFile() != "/var/lib/cpa/expiring-first-live.json" || cfg.LiveAccessLog() != "/CLIProxyAPI/logs/main.log" {
+		t.Fatalf("live files = %q %q", cfg.LiveStateFile(), cfg.LiveAccessLog())
+	}
+}
+
 func TestParseConfigDefaults(t *testing.T) {
 	cfg, err := ParseConfig([]byte("enabled: true\n"))
 	if err != nil {
@@ -54,6 +65,8 @@ func TestParseConfigRejectsInvalidValues(t *testing.T) {
 		"providers: claude\n",
 		"pins_file: pins.json\n",
 		"quota_file: quota.json\n",
+		"live_state_file: live.json\n",
+		"live_access_log: main.log\n",
 		"max_age: 30s\n",
 		"reserve_percent: -1\n",
 		"reserve_percent: 100\n",
@@ -114,6 +127,9 @@ func TestDefaultConfigHasNoPinnedExamples(t *testing.T) {
 	}
 	if !cfg.WritePriorities() {
 		t.Fatal("WritePriorities defaults off")
+	}
+	if !cfg.PreferUsed() {
+		t.Fatal("PreferUsed defaults off")
 	}
 }
 

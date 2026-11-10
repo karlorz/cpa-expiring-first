@@ -1,7 +1,9 @@
 package live
 
 import (
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -121,6 +123,9 @@ func TestLiveRequestFailClosedRejectsWithoutAllowlistedCredential(t *testing.T) 
 	if stats.Rejects != 1 || stats.Picks != 0 || stats.LastAuthID != "" {
 		t.Fatalf("Stats() = %+v, want one reject and no successful pick", stats)
 	}
+	if len(stats.Decisions) != 1 || stats.Decisions[0].Outcome != OutcomeRejected {
+		t.Fatalf("Decisions = %+v, want one reject in the audit log", stats.Decisions)
+	}
 }
 
 func TestLiveRequestFailOpenDelegatesToBuiltin(t *testing.T) {
@@ -130,12 +135,136 @@ func TestLiveRequestFailOpenDelegatesToBuiltin(t *testing.T) {
 	if !handled || !resp.Handled || resp.DelegateBuiltin != StrategyRoundRobin {
 		t.Fatalf("Pick() = %+v handled=%v, want a round-robin delegation", resp, handled)
 	}
+	stats := selector.Stats()
+	if len(stats.Decisions) != 1 || stats.Decisions[0].Outcome != OutcomeDelegated {
+		t.Fatalf("Decisions = %+v, want one delegated row in the audit log", stats.Decisions)
+	}
 }
 
 func TestLiveRequestWithoutAllowlistIsUnhandled(t *testing.T) {
 	selector := NewSelector()
 	if resp, handled := selector.Pick(codexRequest(Model, pluginapi.SchedulerAuthCandidate{ID: "a"})); handled {
 		t.Fatalf("Pick() = %+v handled=true, want unhandled so the host decides", resp)
+	}
+}
+
+func TestLivePickSkipsUsageLimitAndSelectsNextAllowlisted(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	now := time.Now()
+	resetsAt := now.Add(48 * time.Hour).Unix()
+	selector.NoteHostStates([]HostState{{
+		AuthID:        "team.json",
+		StatusMessage: `{"error":{"type":"usage_limit_reached","plan_type":"team","resets_at":` + strconv.FormatInt(resetsAt, 10) + `,"resets_in_seconds":172800}}`,
+	}}, now)
+
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want alice.json after Team Live limit", resp, handled)
+	}
+	skips := selector.LastSkips()
+	if len(skips) != 1 || skips[0].AuthID != "team.json" || skips[0].Reason == "" {
+		t.Fatalf("LastSkips() = %+v, want Team skipped for Live usage limit", skips)
+	}
+}
+
+func TestLivePickSkipsHostCooldown(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	selector.NoteHostStates([]HostState{{
+		AuthID:         "team.json",
+		NextRetryAfter: time.Now().Add(time.Hour),
+	}}, time.Now())
+
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want alice.json after Team cooldown", resp, handled)
+	}
+}
+
+func TestRememberLimitSurvivesEmptyHostListing(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	until := time.Now().UTC().Add(48 * time.Hour)
+	selector.RememberLimit("team.json", until)
+	selector.NoteHostStates([]HostState{{AuthID: "team.json"}, {AuthID: "alice.json"}}, time.Now())
+
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want alice.json after remembered Team limit", resp, handled)
+	}
+	stats := selector.Stats()
+	if untilGot, ok := stats.Limits["team.json"]; !ok || !untilGot.Equal(until) {
+		t.Fatalf("Stats.Limits = %+v, want remembered team.json until %s", stats.Limits, until)
+	}
+}
+
+func TestLivePickRecordsAuditDecision(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	selector.RememberLimit("team.json", time.Now().UTC().Add(48*time.Hour))
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v", resp, handled)
+	}
+	stats := selector.Stats()
+	if len(stats.Decisions) != 1 || stats.Decisions[0].Outcome != OutcomePicked || stats.Decisions[0].AuthID != "alice.json" {
+		t.Fatalf("Decisions = %+v, want one Alice pick", stats.Decisions)
+	}
+	if len(stats.Decisions[0].Skips) != 1 || stats.Decisions[0].Skips[0].AuthID != "team.json" {
+		t.Fatalf("decision skips = %+v, want Team skipped", stats.Decisions[0].Skips)
+	}
+}
+
+func TestRestoreSnapshotMarksLastUsed(t *testing.T) {
+	selector := NewSelector()
+	at := time.Date(2026, 11, 5, 15, 47, 0, 0, time.UTC)
+	selector.Restore(Snapshot{LastAuthID: "alice.json", LastAt: at})
+	stats := selector.Stats()
+	if stats.LastAuthID != "alice.json" || !stats.LastAt.Equal(at) {
+		t.Fatalf("Stats() = %+v, want restored last used alice.json", stats)
+	}
+}
+
+func TestRestoreSnapshotDecisions(t *testing.T) {
+	selector := NewSelector()
+	at := time.Date(2026, 11, 5, 16, 27, 2, 0, time.UTC)
+	selector.Restore(Snapshot{Decisions: []Decision{
+		{ID: 7, At: at, Outcome: OutcomePicked, AuthID: "alice.json", Matching: 3, Ready: 1},
+	}})
+	stats := selector.Stats()
+	if len(stats.Decisions) != 1 || stats.Decisions[0].ID != 7 || stats.Decisions[0].AuthID != "alice.json" {
+		t.Fatalf("Decisions = %+v, want restored Alice pick 7", stats.Decisions)
+	}
+}
+
+func TestDecisionHistoryCapsAt32(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"alice.json"}, FailClosed: true})
+	req := codexRequest(Model, pluginapi.SchedulerAuthCandidate{ID: "alice.json"})
+	for i := 0; i < MaxDecisionHistory+1; i++ {
+		if resp, handled := selector.Pick(req); !handled || resp.AuthID != "alice.json" {
+			t.Fatalf("Pick() = %+v handled=%v", resp, handled)
+		}
+	}
+	stats := selector.Stats()
+	if len(stats.Decisions) != MaxDecisionHistory {
+		t.Fatalf("len(Decisions) = %d, want %d", len(stats.Decisions), MaxDecisionHistory)
+	}
+	if stats.Decisions[0].ID != int64(MaxDecisionHistory+1) || stats.Decisions[len(stats.Decisions)-1].ID != 2 {
+		t.Fatalf("decision IDs = %d..%d, want newest %d and oldest 2", stats.Decisions[0].ID, stats.Decisions[len(stats.Decisions)-1].ID, MaxDecisionHistory+1)
 	}
 }
 

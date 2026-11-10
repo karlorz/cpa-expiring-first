@@ -248,6 +248,10 @@ func configure(raw []byte) error {
 	attachPinsFile(cfg.PinsFile())
 	attachQuotaFile(cfg.QuotaFile(), cfg.MaxAge())
 	attachLive(cfg)
+	attachLiveState(cfg.LiveStateFile())
+	liveAccessLogMu.Lock()
+	liveAccessLogPath = cfg.LiveAccessLog()
+	liveAccessLogMu.Unlock()
 	probeWorker.Configure(cfg)
 	probeWorker.Start(hostCallbacks{})
 	return nil
@@ -259,6 +263,80 @@ func attachLive(cfg router.Config) {
 		AuthIDs:    cfg.LiveAuthIDs(),
 		Strategy:   live.DefaultStrategy,
 		FailClosed: cfg.FailClosed(),
+	})
+}
+
+var (
+	liveStateMu sync.Mutex
+	// liveStatePath is the live-state file currently attached; "" keeps last-used in memory only.
+	liveStatePath string
+	liveStateFile live.StateFile
+
+	liveAccessLogMu sync.Mutex
+	// liveAccessLogPath is the gin access log scanned for Live POST 429s; "" disables the scan.
+	liveAccessLogPath string
+)
+
+// attachLiveState restores last-used Live picks, remembered Live limits, and the Live decision
+// audit from path. Reattaching the same path keeps in-memory state, so a reconfigure does not
+// replace a newer pick with an older file.
+func attachLiveState(path string) {
+	liveStateMu.Lock()
+	defer liveStateMu.Unlock()
+	if path == liveStatePath {
+		return
+	}
+	liveStatePath = path
+	if path == "" {
+		liveStateFile = live.StateFile{}
+		return
+	}
+	file := live.NewStateFile(path)
+	liveStateFile = file
+	saved, errLoad := file.Load()
+	if errLoad != nil {
+		logWarn(fmt.Sprintf("expiring-first: ignoring saved live state: %v", errLoad))
+		return
+	}
+	liveSelector.Restore(saved)
+}
+
+func saveLiveState() {
+	liveStateMu.Lock()
+	path := liveStatePath
+	file := liveStateFile
+	liveStateMu.Unlock()
+	if path == "" {
+		return
+	}
+	if errSave := file.Save(liveSelector.Snapshot()); errSave != nil {
+		logWarn(fmt.Sprintf("expiring-first: saving live state failed: %v", errSave))
+	}
+}
+
+// noteLiveAccessLog remembers a Live usage limit when the previous Live pick was followed by a
+// POST /v1/realtime/calls 429. The host listing does not keep that Codex Live weekly error.
+func noteLiveAccessLog() {
+	liveAccessLogMu.Lock()
+	path := liveAccessLogPath
+	liveAccessLogMu.Unlock()
+	if path == "" {
+		return
+	}
+	stats := liveSelector.Stats()
+	if stats.LastAuthID == "" || stats.LastAt.IsZero() {
+		return
+	}
+	call, ok := live.LastRealtimeCallAfterFile(path, stats.LastAt)
+	if !ok || call.Status != 429 {
+		return
+	}
+	until := call.At.Add(live.AccessLogLimitWindow)
+	liveSelector.RememberLimit(stats.LastAuthID, until)
+	_ = hostLog(hostLogRequest{
+		Level: "info",
+		Message: fmt.Sprintf("expiring-first live: remembered usage limit until %s after POST /v1/realtime/calls 429",
+			until.UTC().Format(time.RFC3339)),
 	})
 }
 
@@ -341,7 +419,13 @@ func pick(raw []byte) ([]byte, error) {
 	// Live Voice first. A Live request is never answered by the weekly-soonest ranking: with no
 	// configured live_auth_ids it stays unhandled, so the host's built-in scheduler decides.
 	if live.IsLiveRequest(req) {
+		if files, errList := listHostAuthFiles(); errList == nil {
+			liveSelector.NoteHostStates(liveHostStates(files), now)
+		}
+		noteLiveAccessLog()
 		if resp, handled := liveSelector.Pick(req); handled {
+			saveLiveState()
+			logLivePick(resp)
 			return okEnvelope(resp)
 		}
 		return okEnvelope(pluginapi.SchedulerPickResponse{})
@@ -385,7 +469,11 @@ func clearStaleCooldowns() {
 	if errList != nil {
 		return
 	}
+	liveIDs := scheduler.Configuration().LiveAuthIDs()
 	for _, stale := range scheduler.StaleCooldowns(states, time.Now()) {
+		if live.MatchesAllowlist(stale.AuthID, liveIDs) {
+			continue
+		}
 		if errReset := resetCooldown(stale.AuthIndex); errReset != nil {
 			// Hosts before CLIProxyAPI 8.0.12 lack the callback; each failure is a rare event.
 			logWarn(fmt.Sprintf("expiring-first: clearing cooldown of %s failed: %v", stale.AuthID, errReset))
@@ -488,11 +576,13 @@ type hostAuthEntry struct {
 	ID             string    `json:"id"`
 	AuthIndex      string    `json:"auth_index"`
 	Disabled       bool      `json:"disabled"`
+	Unavailable    bool      `json:"unavailable"`
 	NextRetryAfter time.Time `json:"next_retry_after"`
+	StatusMessage  string    `json:"status_message"`
 }
 
 // listHostAuthStates asks the host for every credential's runtime state via host.auth.list.
-func listHostAuthStates() (map[string]router.AuthState, error) {
+func listHostAuthFiles() ([]hostAuthEntry, error) {
 	raw, errCall := callHost(pluginabi.MethodHostAuthList, []byte("{}"))
 	if errCall != nil {
 		return nil, errCall
@@ -510,14 +600,63 @@ func listHostAuthStates() (map[string]router.AuthState, error) {
 	if errUnmarshal := json.Unmarshal(resp.Result, &result); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode host.auth.list result: %w", errUnmarshal)
 	}
+	return result.Files, nil
+}
+
+func listHostAuthStates() (map[string]router.AuthState, error) {
+	files, errList := listHostAuthFiles()
+	if errList != nil {
+		return nil, errList
+	}
 	// Entries without an ID come from the host's on-disk fallback and describe no runtime state.
-	states := make(map[string]router.AuthState, len(result.Files))
-	for _, entry := range result.Files {
+	states := make(map[string]router.AuthState, len(files))
+	for _, entry := range files {
 		if entry.ID != "" {
 			states[entry.ID] = router.AuthState{AuthIndex: entry.AuthIndex, Disabled: entry.Disabled, NextRetryAfter: entry.NextRetryAfter}
 		}
 	}
 	return states, nil
+}
+
+func liveHostStates(files []hostAuthEntry) []live.HostState {
+	states := make([]live.HostState, 0, len(files))
+	for _, entry := range files {
+		if entry.ID == "" {
+			continue
+		}
+		states = append(states, live.HostState{
+			AuthID:         entry.ID,
+			Disabled:       entry.Disabled,
+			Unavailable:    entry.Unavailable,
+			NextRetryAfter: entry.NextRetryAfter,
+			StatusMessage:  entry.StatusMessage,
+		})
+	}
+	return states
+}
+
+func logLivePick(resp pluginapi.SchedulerPickResponse) {
+	if !resp.Handled {
+		return
+	}
+	message := "expiring-first live: "
+	switch {
+	case resp.Reject:
+		message += "rejected; no eligible live_auth_ids credential"
+	case resp.AuthID != "":
+		message += "picked " + resp.AuthID
+	case resp.DelegateBuiltin != "":
+		message += "delegated to " + resp.DelegateBuiltin
+	default:
+		return
+	}
+	for _, skip := range liveSelector.LastSkips() {
+		if skip.AuthID == "" || skip.Reason == "" {
+			continue
+		}
+		message += "; skipped " + skip.AuthID + " (" + skip.Reason + ")"
+	}
+	_ = hostLog(hostLogRequest{Level: "info", Message: message})
 }
 
 // callHost invokes a host callback and returns a copy of its response envelope.
@@ -571,7 +710,10 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "preview_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Pinned preview routes as {provider, model} objects. Default empty: observed scheduler picks only."},
 		{Name: "probe_antigravity_claude_gpt", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only."},
 		{Name: "write_priorities", Type: pluginapi.ConfigFieldTypeBoolean, Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher) so CPA fill-first follows that queue. Default true."},
+		{Name: "prefer_used", Type: pluginapi.ConfigFieldTypeBoolean, Description: "For FreeTier WorkBuddy accounts, rank credentials that already have usage ahead of unused (0% used) ones, so fresh accounts stay last. Default true."},
 		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Default empty: host built-in scheduler."},
+		{Name: "live_state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute path of a JSON file that keeps last-used Live picks and remembered Live usage-limit deadlines across reloads. Default empty: memory only."},
+		{Name: "live_access_log", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute gin access-log path. A POST /v1/realtime/calls 429 after the last Live pick is remembered as a Live usage limit. Default empty: do not scan logs."},
 		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true."},
 	}
 }
@@ -746,6 +888,7 @@ func previewCandidates(files []pluginapi.HostAuthFileEntry) map[string][]plugina
 				"disabled":         strconv.FormatBool(file.Disabled),
 				"unavailable":      strconv.FormatBool(file.Unavailable),
 				"next_retry_after": file.NextRetryAfter.Format(time.RFC3339Nano),
+				"status_message":   file.StatusMessage,
 			},
 		})
 	}

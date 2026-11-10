@@ -48,6 +48,12 @@ type Config struct {
 	probeInterval time.Duration
 	// liveAuthIDs is the allowlist for Codex Live requests; empty leaves Live traffic to the host.
 	liveAuthIDs []string
+	// liveStateFile is an absolute path that keeps last-used Live picks and remembered Live
+	// usage-limit deadlines across reloads; empty keeps them in memory only.
+	liveStateFile string
+	// liveAccessLog is an absolute gin access-log path used to remember a Live POST 429 against
+	// the previous Live pick; empty disables that scan.
+	liveAccessLog string
 	// failClosed rejects a Live request when no allowlisted credential is available.
 	failClosed bool
 	// previewModels lists the provider+model routes the console previews next picks for.
@@ -56,11 +62,14 @@ type Config struct {
 	probeAntigravityClaudeGPT bool
 	// writePriorities writes weekly-soonest order into credential priority after each probe.
 	writePriorities bool
+	// preferUsed ranks FreeTier accounts that already have usage ahead of unused (0% used)
+	// accounts. Default true.
+	preferUsed bool
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
 func DefaultConfig() Config {
-	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true, writePriorities: true}
+	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true, writePriorities: true, preferUsed: true}
 }
 
 // ClearCooldowns reports whether stale quota cooldowns are cleared.
@@ -106,6 +115,16 @@ func (c Config) LiveAuthIDs() []string {
 	return c.liveAuthIDs
 }
 
+// LiveStateFile reports where last-used Live picks and remembered Live limits are saved.
+func (c Config) LiveStateFile() string {
+	return c.liveStateFile
+}
+
+// LiveAccessLog reports the gin access log scanned for Live POST 429s, or "".
+func (c Config) LiveAccessLog() string {
+	return c.liveAccessLog
+}
+
 // FailClosed reports whether a Live request without an available allowlisted credential is
 // rejected rather than delegated to the built-in scheduler.
 func (c Config) FailClosed() bool {
@@ -121,6 +140,12 @@ func (c Config) ProbeAntigravityClaudeGPT() bool {
 // WritePriorities reports whether weekly-soonest order is written into credential priority.
 func (c Config) WritePriorities() bool {
 	return c.writePriorities
+}
+
+// PreferUsed reports whether FreeTier accounts with no usage rank after accounts that already
+// have usage. Default true.
+func (c Config) PreferUsed() bool {
+	return c.preferUsed
 }
 
 func (c Config) PreviewModels() []PreviewModel {
@@ -164,10 +189,13 @@ type rawConfig struct {
 	ClearCooldowns            *bool          `yaml:"clear_stale_cooldowns"`
 	ProbeInterval             string         `yaml:"probe_interval"`
 	LiveAuthIDs               []string       `yaml:"live_auth_ids"`
+	LiveStateFile             string         `yaml:"live_state_file"`
+	LiveAccessLog             string         `yaml:"live_access_log"`
 	FailClosed                *bool          `yaml:"fail_closed"`
 	PreviewModels             []PreviewModel `yaml:"preview_models"`
 	ProbeAntigravityClaudeGPT *bool          `yaml:"probe_antigravity_claude_gpt"`
 	WritePriorities           *bool          `yaml:"write_priorities"`
+	PreferUsed                *bool          `yaml:"prefer_used"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -197,6 +225,12 @@ func ParseConfig(raw []byte) (Config, error) {
 	if cfg.quotaFile, errPath = parsePath("quota_file", parsed.QuotaFile); errPath != nil {
 		return Config{}, errPath
 	}
+	if cfg.liveStateFile, errPath = parsePath("live_state_file", parsed.LiveStateFile); errPath != nil {
+		return Config{}, errPath
+	}
+	if cfg.liveAccessLog, errPath = parsePath("live_access_log", parsed.LiveAccessLog); errPath != nil {
+		return Config{}, errPath
+	}
 
 	if parsed.ReservePercent != nil {
 		reserve := *parsed.ReservePercent
@@ -216,6 +250,9 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if parsed.WritePriorities != nil {
 		cfg.writePriorities = *parsed.WritePriorities
+	}
+	if parsed.PreferUsed != nil {
+		cfg.preferUsed = *parsed.PreferUsed
 	}
 
 	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs))

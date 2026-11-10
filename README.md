@@ -4,7 +4,7 @@ A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin f
 
 This is the `karlorz` fork of [magoz/cpa-expiring-first](https://github.com/magoz/cpa-expiring-first). It keeps the weekly-soonest ranking and the sticky fallback, and adds:
 
-- **In-process quota probes** for Antigravity, Claude, Codex and xAI, run on a background interval. The plugin no longer depends on an external writer for its readings.
+- **In-process quota probes** for Antigravity, Claude, Codex, xAI and FreeTier WorkBuddy, run on a background interval. The plugin no longer depends on an external writer for its readings.
 - **An optional quota file overlay**, which can still override individual accounts (see [Quota file](#quota-file)).
 - **Live Voice passthrough** for Codex Live/Realtime traffic, so this can be the only scheduler plugin installed.
 - **A console page** showing quota windows, configured and observed model previews, and the picks this plugin served.
@@ -23,8 +23,11 @@ Every `probe_interval` (default `5m`) the plugin reads each credential's quota t
 | Claude | unified rate-limit headers, else usage JSON | 5-hour and weekly |
 | Codex | `wham/usage` | 5-hour and weekly (monthly on free plans) |
 | xAI | plan classification plus the OAuth weekly billing window | weekly |
+| FreeTier WorkBuddy (`workbuddyglobal`, `workbuddycn`) | billing meter credit packages | one credit window until the soonest remaining package expires or resets |
 
-`used_percent` is `100 - remaining`, `auth_id` is the CLIProxyAPI credential ID (the auth file name), and each reading carries the reset time the provider reports.
+`used_percent` is `100 - remaining`, `auth_id` is the CLIProxyAPI credential ID (the auth file name), and each reading carries the reset time the provider reports. FreeTier WorkBuddy remaining/total credits map onto that same used percent (for example `0 / 440` is 0% used).
+
+**FreeTier unused accounts.** `prefer_used` (default true) ranks WorkBuddy accounts that already have usage ahead of unused (0% used) accounts, then still uses soonest package expiry inside each group. That keeps fresh 0% accounts last so fill-first spends the packs that are already open. Set `prefer_used: false` to rank only by expiry. Claude, Codex, Antigravity and xAI are unchanged.
 
 **Antigravity model groups.** One Antigravity credential is metered twice. The `gemini` group's windows apply only to models containing `gemini`; the `claude_gpt` group's windows apply only to models containing `claude`, `gpt` or `openai`. Both are probed for every Antigravity credential, and the ranking uses whichever group matches the requested model. The console page shows the group for each account.
 
@@ -80,9 +83,11 @@ Codex Live/Realtime traffic (`gpt-live-1-codex`) is decided by its own allowlist
 
 - Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic, in fill-first order.
 - A Live request is never answered by the weekly-soonest ranking. With **no** `live_auth_ids` configured, the plugin leaves the request unhandled, so CLIProxyAPI's built-in scheduler decides, exactly as if this plugin were not installed.
-- With an allowlist, the plugin picks the first matching candidate in `live_auth_ids` order (`fill-first`). Host credential priority, including integers written by `write_priorities`, does not change that order.
+- With an allowlist, the plugin picks the first **eligible** candidate in `live_auth_ids` order (`fill-first`). It skips host-disabled, unavailable, cooling, and Live `usage_limit_reached` credentials, then continues down the list. Host credential priority, including integers written by `write_priorities`, does not change that order.
 - `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no allowlisted credential is available; `fail_closed: false` delegates to the built-in scheduler instead.
-- The status page **Live Voice** section shows that pool in `live_auth_ids` order, host eligibility, the predicted next Live pick, the host fill-first pick (account priority), last pick, and pick/reject counts. Weekly and five-hour numbers on the rest of the page are text quota, not Live minutes. `write_priorities` can set exhausted weekly-text accounts to priority 0; those stay Live-eligible unless the host has actually disabled them.
+- Codex Live weekly 429s often never appear on `host.auth.list`. The plugin remembers those deadlines from a StatusMessage when present, and from a later `POST /v1/realtime/calls` 429 in `live_access_log` (default off). `live_state_file` keeps **in use**, **last used**, and remembered Live limits across reloads.
+- The status page **Live Voice** section shows that pool in `live_auth_ids` order, host eligibility, **in use** (last Live pick within two minutes), **last used**, last skips, the predicted next Live pick, the host fill-first pick (account priority), pick/reject counts, and **Recent Live decisions** (last 32 picks, rejects, and skips). That audit is the table from the old `cpa-live-voice` page and is persisted in `live_state_file`. Live usage-limit rows stay skipped until the reset time. Weekly and five-hour numbers on the rest of the page are text quota, not Live minutes. `write_priorities` can set exhausted weekly-text accounts to priority 0; those stay Live-eligible unless the host has actually disabled them or they have a Live usage limit.
+- Each Live pick is logged as `expiring-first live: picked <id>` with sanitized skip reasons. A remembered 429 is logged without the upstream JSON. Status messages and emails are not logged.
 
 This is the same classification and selection as [karlorz/cpa-live-voice](https://github.com/karlorz/cpa-live-voice), folded into this plugin so the two no longer have to run together.
 
@@ -106,6 +111,7 @@ With `priority: 110` on `expiring-first` and `100` on `cpa-live-voice`, `expirin
 When an account runs out, CLIProxyAPI cools it down until the provider's reset time, which can be days away. If quota comes back earlier, for example because a limit reset was spent on the account, CLIProxyAPI would keep skipping it until that deadline. The plugin clears such cooldowns through `host.routing.reset_cooldown`:
 
 - At most once a minute, on a request, it lists the credentials in a cooldown longer than 30 minutes (quota lockouts; shorter ones are transient or auth errors).
+- Credentials in `live_auth_ids` are not cleared this way. Codex Live weekly is a different meter from the text weekly probe, so a Live `usage_limit_reached` cooldown is left in place until the host reset.
 - It clears one only when a quota reading **taken after the plugin first saw that cooldown** shows quota left on every window. A reading from before the 429 cannot clear it, so a real lockout is never undone by stale data, and each new cooldown needs a newer reading.
 - Each clear is logged at info level: `expiring-first: cleared cooldown of <auth_id> (until …): quota reading at … shows quota left`.
 - Set `clear_stale_cooldowns: false` to turn it off.
@@ -225,8 +231,15 @@ plugins:
       # After each probe, write weekly-soonest order into credential priority
       # (integers, larger = higher) so CPA fill-first follows that queue.
       write_priorities: true
+      # For FreeTier WorkBuddy, rank accounts that already have usage ahead of
+      # unused (0% used) accounts. Default true.
+      prefer_used: true
       # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
       live_auth_ids: [codex-live-account.json]
+      # Optional absolute path that keeps last-used Live picks and remembered Live limits.
+      live_state_file: /home/me/cliproxyapi/expiring-first-live.json
+      # Optional gin access log. A later POST /v1/realtime/calls 429 is remembered as a Live limit.
+      live_access_log: /CLIProxyAPI/logs/main.log
       # Reject a Live request when no live_auth_ids credential is available (default true).
       fail_closed: true
 ```

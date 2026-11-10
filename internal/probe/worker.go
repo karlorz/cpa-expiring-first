@@ -1,7 +1,8 @@
 // Package probe runs the in-process quota probes and keeps their latest readings in memory.
 //
-// The worker probes Antigravity, Claude, Codex and xAI credentials through the host's HTTP
-// transport, never through the provider SDKs, and publishes one snapshot per cycle. Picks read
+// The worker probes Antigravity, Claude, Codex, xAI and FreeTier WorkBuddy credentials through
+// the host's HTTP transport, never through the provider SDKs, and publishes one snapshot per
+// cycle. Picks read
 // the snapshot; they never call a provider. The only credential write the plugin ever performs
 // stays in main.go, where stale cooldowns are cleared through host.routing.reset_cooldown.
 package probe
@@ -15,6 +16,7 @@ import (
 	"github.com/karlorz/cpa-expiring-first/internal/probe/antigravity"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/claude"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/codex"
+	"github.com/karlorz/cpa-expiring-first/internal/probe/freetier"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/host"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/reading"
 	"github.com/karlorz/cpa-expiring-first/internal/probe/xai"
@@ -365,6 +367,27 @@ func probeCredential(ctx context.Context, client *host.Client, item credential, 
 			Error:      sanitizeError(result.Error),
 		}
 	default:
+		if freetier.IsProvider(item.provider) {
+			result := freetier.NewProber(client, fixedClock{now: now}).Probe(ctx, freetier.ProbeRequest{
+				AuthID:       item.id,
+				AuthIndex:    item.authIndex,
+				Provider:     item.provider,
+				AccessToken:  item.material.AccessToken,
+				UID:          firstNonEmpty(item.material.UID, item.material.UserID),
+				Domain:       item.material.Domain,
+				EnterpriseID: item.material.EnterpriseID,
+				DeviceToken:  item.material.DeviceToken,
+			})
+			return Account{
+				AuthID:     item.id,
+				AuthIndex:  item.authIndex,
+				Provider:   item.provider,
+				ObservedAt: now,
+				Windows:    freetier.Windows(result),
+				PlanType:   reading.PlanTypeFree,
+				Error:      sanitizeError(result.Error),
+			}
+		}
 		result := codex.NewProber(client, fixedClock{now: now}).Probe(ctx, codex.ProbeRequest{
 			AuthID:      item.id,
 			AuthIndex:   item.authIndex,

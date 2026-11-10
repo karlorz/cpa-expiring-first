@@ -237,7 +237,7 @@ func (s *Scheduler) pick(req pluginapi.SchedulerPickRequest, now time.Time) (res
 			if !cfg.ProbeAntigravityClaudeGPT() {
 				quota = dropClaudeGPTQuota(quota)
 			}
-			if choice, ok := rankByQuota(req.Candidates, quota, key.model, now, cfg.MaxAge(), cfg.ReservePercent()); ok {
+			if choice, ok := rankByQuota(req.Candidates, quota, key.model, now, cfg.MaxAge(), cfg.ReservePercent(), preferUsedFor(cfg, provider)); ok {
 				ranked = true
 				return s.followQuota(key, choice, now)
 			}
@@ -395,7 +395,7 @@ func (s *Scheduler) Preview(candidates []pluginapi.SchedulerAuthCandidate, provi
 	if !cfg.ProbeAntigravityClaudeGPT() {
 		quota = dropClaudeGPTQuota(quota)
 	}
-	choice, okChoice := rankByQuota(candidates, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
+	choice, okChoice := rankByQuota(candidates, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent(), preferUsedFor(cfg, provider))
 	if !okChoice {
 		return "", false
 	}

@@ -48,7 +48,7 @@ const StatusHTML = `<!doctype html>
   th { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
   tr:last-child td { border-bottom: none; }
   code { font-family: var(--mono); font-size: 0.8rem; overflow-wrap: anywhere; }
-  .pill { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }
+  .pill { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; margin: 0 0.25rem 0.15rem 0; }
   .pill.ok { background: var(--success-bg); color: var(--success); }
   .pill.warn { background: var(--warning-bg); color: var(--warning); }
   .pill.bad { background: var(--danger-bg); color: var(--danger); }
@@ -97,9 +97,12 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Live Voice</h2>
-    <p class="muted">Live next pick follows live_auth_ids among host-enabled credentials. Host fill-first is CPA account priority (larger = higher); write_priorities sets exhausted weekly text accounts to 0, so those rows can still be Live-eligible while fill-first skips them. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
+    <p class="muted">Live next pick follows live_auth_ids among host-enabled credentials, skipping disabled, cooling, and Live usage_limit_reached accounts. In use is the last Live pick from the last two minutes. Last used stays until a later Live pick; both survive a plugin reload when live_state_file is set. Host listing often omits Codex Live weekly 429s; those deadlines are remembered, including from a later POST /v1/realtime/calls 429 in live_access_log. Host fill-first is CPA account priority (larger = higher); write_priorities sets exhausted weekly text accounts to 0, so those rows can still be Live-eligible while fill-first skips them. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
     <div class="grid" id="live-metrics"></div>
     <div id="live-order" style="margin-top:0.75rem"></div>
+    <h2 style="margin-top:1rem">Recent Live decisions</h2>
+    <p class="muted">Last 32 Live picks, rejects, and skips. This is the audit table from the old Live Voice plugin, kept here and across reloads. Credential IDs and skip reasons only.</p>
+    <div id="live-decisions" style="margin-top:0.5rem"></div>
   </section>
 
   <section class="card">
@@ -122,7 +125,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Schedule outcome</h2>
-    <p class="muted">Current account list ranked weekly-soonest for ordinary traffic, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. Codex Live/Realtime uses the Live Voice section, not this ranking. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
+    <p class="muted">Current account list ranked weekly-soonest for ordinary traffic, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. FreeTier WorkBuddy credit usage is probed here too; with prefer_used (default) unused 0% accounts rank after accounts that already have usage. Codex Live/Realtime uses the Live Voice section, not this ranking. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
     <div id="account-order"></div>
   </section>
 
@@ -208,6 +211,13 @@ const StatusHTML = `<!doctype html>
     return wrap;
   }
 
+  function liveSkipText(skips) {
+    if (!skips || !skips.length) { return 'none'; }
+    return skips.map(function (skip) {
+      return (skip.auth_id || 'account') + ': ' + (skip.reason || 'skipped');
+    }).join(' · ');
+  }
+
   function metric(label, value) {
     var node = el('div', 'metric');
     node.appendChild(el('div', 'label', label));
@@ -261,32 +271,54 @@ const StatusHTML = `<!doctype html>
     replace(document.getElementById('live-metrics'), [
       metric('Pool', live.enabled ? String(live.pool_size || 0) + ' (' + (live.strategy || 'fill-first') + ')' : 'not configured'),
       metric('Fail closed', live.enabled ? (live.fail_closed ? 'yes' : 'no') : '—'),
+      metric('In use', live.in_use_auth_id || 'idle'),
+      metric('Last used', live.last_auth_id || 'none yet'),
+      metric('Last used at', live.last_picked_at ? new Date(live.last_picked_at).toLocaleString() : '—'),
       metric('Next Live pick', live.next_auth_id || (live.enabled ? 'none eligible' : '—')),
       metric('Host fill-first', live.fill_first_auth_id || (live.enabled ? 'none eligible' : '—')),
-      metric('Last pick', live.last_auth_id || 'none yet'),
-      metric('Last picked at', live.last_picked_at ? new Date(live.last_picked_at).toLocaleString() : '—'),
-      metric('Picks / rejects', (live.picks || 0) + ' / ' + (live.rejects || 0))
+      metric('Picks / rejects', (live.picks || 0) + ' / ' + (live.rejects || 0)),
+      metric('Last skips', liveSkipText(live.skips))
     ]);
     var liveRows = (live.accounts || []).map(function (account) {
-      var result = '#' + account.order;
-      if (account.next_pick) { result += ' · next Live pick'; }
-      if (account.fill_first_next) { result += ' · host fill-first'; }
-      if (account.last_selected) { result += ' · last selected'; }
+      var role = el('div');
+      if (account.in_use) { role.appendChild(el('span', 'pill ok', 'in use')); }
+      else if (account.last_selected) { role.appendChild(el('span', 'pill info', 'last used')); }
+      if (account.next_pick) { role.appendChild(el('span', 'pill info', 'next Live')); }
+      if (account.fill_first_next) { role.appendChild(el('span', 'pill ok', 'host fill-first')); }
+      if (!role.childNodes.length) { role.appendChild(el('span', 'muted', '—')); }
       var state;
       if (!account.present) { state = el('span', 'pill warn', 'missing'); }
       else if (account.disabled) { state = el('span', 'pill bad', 'disabled'); }
       else if (account.unavailable) { state = el('span', 'pill warn', 'unavailable'); }
+      else if (account.live_limit) { state = el('span', 'pill bad', 'live limit'); }
       else if (account.cooling) { state = el('span', 'pill warn', 'cooldown'); }
       else if (account.fill_first_next) { state = el('span', 'pill ok', 'fill-first'); }
       else if (account.next_pick) { state = el('span', 'pill info', 'live next'); }
       else if (account.eligible && !account.fill_first_next) { state = el('span', 'pill warn', 'priority skipped'); }
       else { state = el('span', 'pill ok', 'eligible'); }
-      return [result, account.auth_id, state, account.account_priority, account.reason];
+      return ['#' + account.order, role, account.auth_id, state, account.account_priority, account.reason];
     });
     replace(document.getElementById('live-order'), [
       live.enabled
-        ? table(['Order / outcome', 'Credential', 'Host state', 'Account priority', 'Reason'], liveRows)
+        ? table(['Order', 'Role', 'Credential', 'Host state', 'Account priority', 'Reason'], liveRows)
         : el('div', 'empty', 'No live_auth_ids configured; Live stays with the host scheduler.')
+    ]);
+    var decisionRows = (live.decisions || []).map(function (decision) {
+      return [
+        decision.id,
+        decision.at ? new Date(decision.at).toLocaleString() : '—',
+        decision.outcome || '—',
+        decision.auth_id || '—',
+        (decision.ready || 0) + ' / ' + (decision.matching || 0),
+        liveSkipText(decision.skips) === 'none' ? (decision.reason || '—') : liveSkipText(decision.skips)
+      ];
+    });
+    replace(document.getElementById('live-decisions'), [
+      !live.enabled
+        ? el('div', 'empty', '')
+        : decisionRows.length
+          ? table(['ID', 'Time', 'Outcome', 'Credential', 'Ready / matching', 'Skips / reason'], decisionRows)
+          : el('div', 'empty', 'No Live decisions yet. They appear after the next Live pick.')
     ]);
 
     document.getElementById('serving-note').textContent = (data.picks_handled || 0) > 0

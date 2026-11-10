@@ -163,7 +163,7 @@ func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
 	if rows[0].AuthID != "soon" || rows[0].Order != 1 || rows[1].AuthID != "later" || rows[1].Order != 2 {
 		t.Fatalf("order=%+v", rows)
 	}
-	choice, ok := rankByQuota(candidates[:6], quota, "gemini-3.8-flash-high", t0, cfg.MaxAge(), cfg.ReservePercent())
+	choice, ok := rankByQuota(candidates[:6], quota, "gemini-3.8-flash-high", t0, cfg.MaxAge(), cfg.ReservePercent(), false)
 	if !ok || rows[0].AuthID != choice.authID {
 		t.Fatal("display and pick differ")
 	}
@@ -179,6 +179,73 @@ func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
 	after := RankCandidates(candidates, quota, "antigravity", "gemini-3.8-flash-high", t0.Add(11*time.Minute), cfg)
 	if after[0].AuthID != "five-hour" {
 		t.Fatalf("reset order=%+v", after)
+	}
+}
+
+func TestPreferUsedRanksFreetierUnusedLast(t *testing.T) {
+	quota := Quota{
+		"unused-soon": reading(weekly(0, t0.Add(24*time.Hour))),
+		"used-later":  reading(weekly(67, t0.Add(72*time.Hour))),
+		"used-soon":   reading(weekly(6, t0.Add(48*time.Hour))),
+	}
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		{ID: "unused-soon", Priority: 50},
+		{ID: "used-later", Priority: 50},
+		{ID: "used-soon", Priority: 50},
+	}
+	cfg := DefaultConfig()
+	rows := RankCandidates(candidates, quota, "workbuddyglobal", "deepseek-v4.1-flash", t0, cfg)
+	if rows[0].AuthID != "used-soon" || rows[1].AuthID != "used-later" || rows[2].AuthID != "unused-soon" {
+		t.Fatalf("prefer_used order=%+v", rows)
+	}
+	if !rows[2].Unused || rows[0].Unused {
+		t.Fatalf("unused flags=%+v", rows)
+	}
+	writes := AssignPriorityWrites(rows)
+	got := map[string]int{}
+	for _, write := range writes {
+		got[write.AuthID] = write.To
+	}
+	if got["used-soon"] != 100 || got["used-later"] != 99 || got["unused-soon"] != 98 {
+		t.Fatalf("priority writes=%+v", writes)
+	}
+
+	off, err := ParseConfig([]byte("prefer_used: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byExpiry := RankCandidates(candidates, quota, "workbuddyglobal", "deepseek-v4.1-flash", t0, off)
+	if byExpiry[0].AuthID != "unused-soon" {
+		t.Fatalf("prefer_used false order=%+v, want unused-soon first", byExpiry)
+	}
+}
+
+func TestPickPrefersUsedFreetierAccounts(t *testing.T) {
+	s := quotaScheduler(t, Quota{
+		"unused-soon": reading(weekly(0, t0.Add(24*time.Hour))),
+		"used-later":  reading(weekly(67, t0.Add(72*time.Hour))),
+	})
+	req := pluginapi.SchedulerPickRequest{
+		Provider:  "workbuddyglobal",
+		Providers: []string{"workbuddyglobal"},
+		Model:     "deepseek-v4.1-flash",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "unused-soon", Provider: "workbuddyglobal"},
+			{ID: "used-later", Provider: "workbuddyglobal"},
+		},
+	}
+	mustPick(t, s, req, t0, "used-later")
+}
+
+func TestPreferUsedDoesNotChangeAntigravityOrder(t *testing.T) {
+	quota := Quota{
+		"unused-soon": reading(weekly(0, t0.Add(24*time.Hour))),
+		"used-later":  reading(weekly(40, t0.Add(72*time.Hour))),
+	}
+	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "unused-soon"}, {ID: "used-later"}}
+	rows := RankCandidates(candidates, quota, "antigravity", "gemini-3-pro", t0, DefaultConfig())
+	if rows[0].AuthID != "unused-soon" {
+		t.Fatalf("antigravity order=%+v, want weekly-soonest even when unused", rows)
 	}
 }
 

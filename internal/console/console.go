@@ -278,17 +278,20 @@ type StatusView struct {
 // LiveView is Codex Live/Realtime pool usage and fill-first scheduling. Weekly and five-hour
 // text quota is not Live remaining and is not included here.
 type LiveView struct {
-	Enabled         bool           `json:"enabled"`
-	Strategy        string         `json:"strategy"`
-	FailClosed      bool           `json:"fail_closed"`
-	PoolSize        int            `json:"pool_size"`
-	Picks           int64          `json:"picks"`
-	Rejects         int64          `json:"rejects"`
-	LastAuthID      string         `json:"last_auth_id,omitempty"`
-	LastAt          *time.Time     `json:"last_picked_at,omitempty"`
-	NextAuthID      string         `json:"next_auth_id,omitempty"`
-	FillFirstAuthID string         `json:"fill_first_auth_id,omitempty"`
-	Accounts        []live.PoolRow `json:"accounts"`
+	Enabled         bool            `json:"enabled"`
+	Strategy        string          `json:"strategy"`
+	FailClosed      bool            `json:"fail_closed"`
+	PoolSize        int             `json:"pool_size"`
+	Picks           int64           `json:"picks"`
+	Rejects         int64           `json:"rejects"`
+	LastAuthID      string          `json:"last_auth_id,omitempty"`
+	LastAt          *time.Time      `json:"last_picked_at,omitempty"`
+	InUseAuthID     string          `json:"in_use_auth_id,omitempty"`
+	NextAuthID      string          `json:"next_auth_id,omitempty"`
+	FillFirstAuthID string          `json:"fill_first_auth_id,omitempty"`
+	Skips           []live.Skip     `json:"skips,omitempty"`
+	Decisions       []live.Decision `json:"decisions,omitempty"`
+	Accounts        []live.PoolRow  `json:"accounts"`
 }
 
 func (h *Handler) pinsView() []PinView {
@@ -460,9 +463,12 @@ func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthC
 				reason += "; latest probe: " + probeErrors[row.AuthID]
 			}
 			if reason == "" {
-				if row.Order == 1 {
+				switch {
+				case row.Unused:
+					reason = "Unused quota, ranked after accounts with usage"
+				case row.Order == 1:
 					reason = "First by reset, priority, then auth ID"
-				} else {
+				default:
 					reason = "Ordered by reset, priority, then auth ID"
 				}
 			}
@@ -563,6 +569,8 @@ func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi
 		Picks:      stats.Picks,
 		Rejects:    stats.Rejects,
 		LastAuthID: stats.LastAuthID,
+		Skips:      stats.Skips,
+		Decisions:  stats.Decisions,
 	}
 	if !stats.LastAt.IsZero() {
 		pickedAt := stats.LastAt.UTC()
@@ -572,13 +580,17 @@ func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi
 	if byProvider != nil {
 		candidates = byProvider[live.Provider]
 	}
-	view.Accounts = live.DescribePool(config, candidates, stats.LastAuthID, h.now())
+	now := h.now()
+	view.Accounts = live.DescribePool(config, candidates, stats.LastAuthID, stats.LastAt, stats.Limits, now)
 	for _, account := range view.Accounts {
 		if account.NextPick && view.NextAuthID == "" {
 			view.NextAuthID = account.AuthID
 		}
 		if account.FillFirstNext && view.FillFirstAuthID == "" {
 			view.FillFirstAuthID = account.AuthID
+		}
+		if account.InUse && view.InUseAuthID == "" {
+			view.InUseAuthID = account.AuthID
 		}
 	}
 	return view

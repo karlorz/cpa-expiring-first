@@ -10,25 +10,36 @@ import (
 
 // PoolRow is one live_auth_ids credential as shown on the status page.
 type PoolRow struct {
-	Order         int    `json:"order"`
-	AuthID        string `json:"auth_id"`
-	Present       bool   `json:"present"`
-	Disabled      bool   `json:"disabled"`
-	Unavailable   bool   `json:"unavailable"`
-	Cooling       bool   `json:"cooling"`
-	Eligible      bool   `json:"eligible"`
-	NextPick      bool   `json:"next_pick"`
-	FillFirstNext bool   `json:"fill_first_next"`
-	LastSelected  bool   `json:"last_selected"`
-	Priority      int    `json:"account_priority"`
-	Reason        string `json:"reason"`
+	Order          int        `json:"order"`
+	AuthID         string     `json:"auth_id"`
+	Present        bool       `json:"present"`
+	Disabled       bool       `json:"disabled"`
+	Unavailable    bool       `json:"unavailable"`
+	Cooling        bool       `json:"cooling"`
+	Eligible       bool       `json:"eligible"`
+	NextPick       bool       `json:"next_pick"`
+	FillFirstNext  bool       `json:"fill_first_next"`
+	LastSelected   bool       `json:"last_selected"`
+	InUse          bool       `json:"in_use"`
+	LiveLimit      bool       `json:"live_limit"`
+	LiveLimitUntil *time.Time `json:"live_limit_until,omitempty"`
+	Priority       int        `json:"account_priority"`
+	Reason         string     `json:"reason"`
 }
 
 // DescribePool returns live_auth_ids in configured fill-first order, joined with host candidate
 // state. Weekly/five-hour text quota is not Live remaining and is not included here.
-func DescribePool(config Config, candidates []pluginapi.SchedulerAuthCandidate, lastAuthID string, now time.Time) []PoolRow {
+func DescribePool(
+	config Config,
+	candidates []pluginapi.SchedulerAuthCandidate,
+	lastAuthID string,
+	lastAt time.Time,
+	limits map[string]time.Time,
+	now time.Time,
+) []PoolRow {
 	rows := make([]PoolRow, 0, len(config.AuthIDs))
 	lastAuthID = strings.TrimSpace(lastAuthID)
+	inUse := lastAuthID != "" && !lastAt.IsZero() && !now.Before(lastAt) && now.Sub(lastAt) <= InUseWindow
 	nextMarked := false
 	for i, configured := range config.AuthIDs {
 		id := strings.TrimSpace(configured)
@@ -52,15 +63,31 @@ func DescribePool(config Config, candidates []pluginapi.SchedulerAuthCandidate, 
 		row.Unavailable = parseBoolAttr(candidate.Attributes["unavailable"])
 		retryAfter, cooling := cooldownUntil(candidate.Attributes["next_retry_after"], now)
 		row.Cooling = cooling
+		limitPlan := ""
+		if until, okLimit := lookupTime(candidate, limits, now); okLimit {
+			limitUntil := until.UTC()
+			row.LiveLimit = true
+			row.LiveLimitUntil = &limitUntil
+			row.Cooling = true
+		} else if until, plan, okLimit := parseUsageLimit(candidate.Attributes["status_message"], now); okLimit {
+			limitUntil := until.UTC()
+			row.LiveLimit = true
+			row.LiveLimitUntil = &limitUntil
+			row.Cooling = true
+			limitPlan = plan
+		}
 		row.Eligible = !row.Disabled && !row.Unavailable && !row.Cooling
 		row.LastSelected = lastAuthID != "" && (strings.EqualFold(row.AuthID, lastAuthID) || strings.EqualFold(id, lastAuthID))
+		row.InUse = inUse && row.LastSelected
 		switch {
 		case row.Disabled:
 			row.Reason = "Account disabled"
 		case row.Unavailable:
 			row.Reason = "Unavailable"
+		case row.LiveLimit && row.LiveLimitUntil != nil:
+			row.Reason = liveLimitReason(*row.LiveLimitUntil, limitPlan)
 		case row.Cooling:
-			row.Reason = "In cooldown until " + retryAfter.Format(time.RFC3339)
+			row.Reason = "In cooldown until " + retryAfter.UTC().Format(time.RFC3339)
 		default:
 			row.Reason = "Eligible"
 		}

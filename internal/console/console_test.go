@@ -155,8 +155,14 @@ func TestStatusPageNamesCredentialsAndEmbedsPayload(t *testing.T) {
 	if !strings.Contains(body, "Live Voice") || !strings.Contains(body, "not Live minutes remaining") {
 		t.Fatal("page does not explain Live Voice pool usage and scheduling")
 	}
-	if !strings.Contains(body, "Host fill-first") || !strings.Contains(body, "next Live pick") {
+	if !strings.Contains(body, "Host fill-first") || !strings.Contains(body, "Next Live pick") {
 		t.Fatal("page does not separate Live next pick from host fill-first")
+	}
+	if !strings.Contains(body, "In use") || !strings.Contains(body, "Last used") || !strings.Contains(body, "Last skips") {
+		t.Fatal("page does not mark the in-use, last-used, and last-skipped Live credentials")
+	}
+	if !strings.Contains(body, "Recent Live decisions") {
+		t.Fatal("page does not show the Live Voice decision audit table")
 	}
 	if strings.Contains(body, "__EXPIRING_FIRST_BOOTSTRAP_JSON__") {
 		t.Fatal("bootstrap placeholder was not replaced")
@@ -490,17 +496,65 @@ func TestStatusViewShowsLiveVoiceSchedule(t *testing.T) {
 	if !view.Live.Enabled || view.Live.PoolSize != 3 || !view.Live.FailClosed {
 		t.Fatalf("live = %+v, want a configured three-account fill-first pool", view.Live)
 	}
-	if view.Live.NextAuthID != "team.json" || view.Live.LastAuthID != "team.json" || view.Live.Picks != 3 {
-		t.Fatalf("live usage = %+v, want Team as next and last pick", view.Live)
+	if view.Live.NextAuthID != "team.json" || view.Live.LastAuthID != "team.json" || view.Live.InUseAuthID != "team.json" || view.Live.Picks != 3 {
+		t.Fatalf("live usage = %+v, want Team as in use, next and last pick", view.Live)
 	}
 	if len(view.Live.Accounts) != 3 {
 		t.Fatalf("accounts = %+v, want allowlist order", view.Live.Accounts)
 	}
-	if view.Live.Accounts[0].AuthID != "team.json" || !view.Live.Accounts[0].NextPick || !view.Live.Accounts[0].LastSelected {
-		t.Fatalf("first account = %+v, want Team as next and last pick", view.Live.Accounts[0])
+	if view.Live.Accounts[0].AuthID != "team.json" || !view.Live.Accounts[0].NextPick || !view.Live.Accounts[0].LastSelected || !view.Live.Accounts[0].InUse {
+		t.Fatalf("first account = %+v, want Team as in use, next and last pick", view.Live.Accounts[0])
 	}
 	if view.Live.Accounts[1].Eligible || view.Live.Accounts[1].Reason != "Account disabled" {
 		t.Fatalf("second account = %+v, want Karl disabled", view.Live.Accounts[1])
+	}
+}
+
+func TestStatusViewMarksLiveUsageLimitAndLastUsed(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.liveConfig = live.Config{
+		AuthIDs:    []string{"team.json", "alice.json"},
+		Strategy:   live.StrategyFillFirst,
+		FailClosed: true,
+	}
+	sources.liveStats = live.Stats{Picks: 4, LastAuthID: "team.json", LastAt: now.Add(-time.Hour)}
+	sources.candidates = map[string][]pluginapi.SchedulerAuthCandidate{
+		"codex": {
+			{ID: "team.json", Provider: "codex", Attributes: map[string]string{
+				"status_message": `{"error":{"type":"usage_limit_reached","plan_type":"team","resets_at":1794043458}}`,
+			}},
+			{ID: "alice.json", Provider: "codex", Priority: 99},
+		},
+	}
+	view := handler.statusView(context.Background())
+	if view.Live.InUseAuthID != "" || view.Live.LastAuthID != "team.json" || view.Live.NextAuthID != "alice.json" {
+		t.Fatalf("live usage = %+v, want Team last used and Alice next", view.Live)
+	}
+	if !view.Live.Accounts[0].LiveLimit || !view.Live.Accounts[0].LastSelected || view.Live.Accounts[0].InUse || view.Live.Accounts[0].NextPick {
+		t.Fatalf("team = %+v, want last used with a Live limit", view.Live.Accounts[0])
+	}
+	if !view.Live.Accounts[1].NextPick {
+		t.Fatalf("alice = %+v, want next Live pick", view.Live.Accounts[1])
+	}
+}
+
+func TestStatusViewShowsLastLiveSkips(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.liveConfig = live.Config{AuthIDs: []string{"team.json", "alice.json"}, Strategy: live.StrategyFillFirst, FailClosed: true}
+	sources.liveStats = live.Stats{
+		LastAuthID: "alice.json",
+		Skips:      []live.Skip{{AuthID: "team.json", Reason: "Live usage limit (team) until 2026-11-07T09:24:18Z"}},
+		Decisions: []live.Decision{{
+			ID: 1, Outcome: live.OutcomePicked, AuthID: "alice.json", Matching: 2, Ready: 1,
+			Skips: []live.Skip{{AuthID: "team.json", Reason: "Live usage limit (team) until 2026-11-07T09:24:18Z"}},
+		}},
+	}
+	view := handler.statusView(context.Background())
+	if len(view.Live.Skips) != 1 || view.Live.Skips[0].AuthID != "team.json" {
+		t.Fatalf("skips = %+v, want Team skip on the Live view", view.Live.Skips)
+	}
+	if len(view.Live.Decisions) != 1 || view.Live.Decisions[0].AuthID != "alice.json" {
+		t.Fatalf("decisions = %+v, want Alice pick on the Live view", view.Live.Decisions)
 	}
 }
 
