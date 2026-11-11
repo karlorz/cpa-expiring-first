@@ -97,6 +97,23 @@ func TestDescribePoolMarksLiveLimitAndLastUsedWithoutInUse(t *testing.T) {
 	}
 }
 
+func TestDescribePoolDefaultsToAvailableCodexCredentials(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	rows := DescribePool(Config{Strategy: StrategyFillFirst}, []pluginapi.SchedulerAuthCandidate{
+		{ID: "key.json", Provider: "codex", Priority: 100, Attributes: map[string]string{"auth_kind": "apikey"}},
+		{ID: "alice.json", Provider: "codex", Priority: 98},
+		{ID: "team.json", Provider: "codex", Priority: 99},
+	}, "", time.Time{}, nil, now)
+	if len(rows) != 2 || rows[0].AuthID != "team.json" || !rows[0].NextPick || rows[1].AuthID != "alice.json" {
+		t.Fatalf("rows = %+v, want Team then Alice from available Codex fill-first", rows)
+	}
+	if PoolSource(Config{}, []pluginapi.SchedulerAuthCandidate{
+		{ID: "team.json", Provider: "codex"},
+	}) != PoolSourceAvailable {
+		t.Fatal("want available pool source")
+	}
+}
+
 func TestDescribePoolParsesUsageLimitStatusMessage(t *testing.T) {
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	message := `{"error":{"type":"usage_limit_reached","plan_type":"team","resets_at":1794043458}}`

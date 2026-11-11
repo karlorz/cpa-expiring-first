@@ -6,7 +6,7 @@
       "name": "Expiring First (karlorz)",
       "description": "Weekly-soonest quota scheduling with in-process Antigravity, Claude, Codex, xAI and FreeTier WorkBuddy probes, Live Voice routing, and a quota console.",
       "author": "karlorz",
-      "version": "0.3.14",
+      "version": "0.3.15",
       "repository": "https://github.com/karlorz/cpa-expiring-first",
       "homepage": "https://github.com/karlorz/cpa-expiring-first",
       "license": "MIT",

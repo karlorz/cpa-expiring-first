@@ -279,6 +279,7 @@ type StatusView struct {
 // text quota is not Live remaining and is not included here.
 type LiveView struct {
 	Enabled         bool            `json:"enabled"`
+	Source          string          `json:"source,omitempty"`
 	Strategy        string          `json:"strategy"`
 	FailClosed      bool            `json:"fail_closed"`
 	PoolSize        int             `json:"pool_size"`
@@ -531,6 +532,7 @@ func (h *Handler) statusView(ctx context.Context) StatusView {
 	previews := h.previewRoutes(byProvider)
 	counts := h.pickCounts()
 	readings, outcomes, succeeded, failed := h.probeCounts()
+	liveView := h.liveView(liveConfig, byProvider)
 
 	view := StatusView{
 		Version:           h.sources.Version(),
@@ -538,10 +540,10 @@ func (h *Handler) statusView(ctx context.Context) StatusView {
 		Providers:         h.sources.Config().Providers(),
 		ProbeInterval:     h.sources.ProbeInterval().String(),
 		LastProbeAt:       h.sources.LastProbeAt().UTC(),
-		LiveEnabled:       liveConfig.Enabled(),
-		LivePoolSize:      len(liveConfig.AuthIDs),
+		LiveEnabled:       liveView.Enabled,
+		LivePoolSize:      liveView.PoolSize,
 		LiveStrategy:      liveConfig.Strategy,
-		Live:              h.liveView(liveConfig, byProvider),
+		Live:              liveView,
 		Pins:              h.pinsView(),
 		Quota:             quota,
 		Previews:          previews,
@@ -561,11 +563,21 @@ func (h *Handler) statusView(ctx context.Context) StatusView {
 
 func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi.SchedulerAuthCandidate) LiveView {
 	stats := h.sources.LiveStats()
+	var candidates []pluginapi.SchedulerAuthCandidate
+	if byProvider != nil {
+		candidates = byProvider[live.Provider]
+	}
+	pool := live.ResolvePool(candidates, config)
+	strategy := config.Strategy
+	if strategy == "" {
+		strategy = live.DefaultStrategy
+	}
 	view := LiveView{
-		Enabled:    config.Enabled(),
-		Strategy:   config.Strategy,
-		FailClosed: config.FailClosed,
-		PoolSize:   len(config.AuthIDs),
+		Enabled:    len(pool.IDs) > 0,
+		Source:     pool.Source,
+		Strategy:   strategy,
+		FailClosed: config.AllowlistConfigured() && config.FailClosed,
+		PoolSize:   len(pool.IDs),
 		Picks:      stats.Picks,
 		Rejects:    stats.Rejects,
 		LastAuthID: stats.LastAuthID,
@@ -576,12 +588,8 @@ func (h *Handler) liveView(config live.Config, byProvider map[string][]pluginapi
 		pickedAt := stats.LastAt.UTC()
 		view.LastAt = &pickedAt
 	}
-	var candidates []pluginapi.SchedulerAuthCandidate
-	if byProvider != nil {
-		candidates = byProvider[live.Provider]
-	}
 	now := h.now()
-	view.Accounts = live.DescribePool(config, candidates, stats.LastAuthID, stats.LastAt, stats.Limits, now)
+	view.Accounts = live.DescribeIDs(pool.IDs, candidates, stats.LastAuthID, stats.LastAt, stats.Limits, now)
 	for _, account := range view.Accounts {
 		if account.NextPick && view.NextAuthID == "" {
 			view.NextAuthID = account.AuthID

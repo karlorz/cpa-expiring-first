@@ -67,10 +67,11 @@ func TestLiveRequestUsesAllowlistBeforeRanking(t *testing.T) {
 	}
 }
 
-// TestLiveRequestWithoutAllowlistIsUnhandled checks that a Live request never falls back to the
-// weekly-soonest ranking: with no allowlist it is left to the host's built-in scheduler.
-func TestLiveRequestWithoutAllowlistIsUnhandled(t *testing.T) {
+// TestLiveRequestWithoutAllowlistUsesAvailableCodex checks that a Live request with no
+// live_auth_ids uses available Codex OAuth instead of weekly-soonest ranking.
+func TestLiveRequestWithoutAllowlistUsesAvailableCodex(t *testing.T) {
 	liveSelector.Configure(live.Config{})
+	t.Cleanup(func() { liveSelector.Configure(live.Config{}) })
 	now := time.Now()
 	memoryQuota.Replace(router.Quota{
 		"codex-a.json": {UpdatedAt: now, Windows: []router.QuotaWindow{{Minutes: 10080, UsedPercent: 0, ResetsAt: now.Add(24 * time.Hour)}}},
@@ -78,6 +79,20 @@ func TestLiveRequestWithoutAllowlistIsUnhandled(t *testing.T) {
 	t.Cleanup(func() { memoryQuota.Replace(nil) })
 
 	resp := decodePick(t, codexPick(live.Model, pluginapi.SchedulerAuthCandidate{ID: "codex-a.json"}))
+	if !resp.Handled || resp.AuthID != "codex-a.json" {
+		t.Fatalf("pick = %+v, want available Codex credential", resp)
+	}
+}
+
+// TestLiveRequestWithoutAllowlistIsUnhandledWhenNoSource checks that a Live request with no
+// Codex OAuth is left to the host's built-in scheduler.
+func TestLiveRequestWithoutAllowlistIsUnhandledWhenNoSource(t *testing.T) {
+	liveSelector.Configure(live.Config{})
+	t.Cleanup(func() { liveSelector.Configure(live.Config{}) })
+
+	resp := decodePick(t, codexPick(live.Model, pluginapi.SchedulerAuthCandidate{
+		ID: "codex-key.json", Attributes: map[string]string{"auth_kind": "apikey"},
+	}))
 	if resp.Handled {
 		t.Fatalf("pick = %+v, want unhandled so the host decides", resp)
 	}
@@ -209,7 +224,7 @@ func TestConfigFieldsDeclarePluginDefaults(t *testing.T) {
 			t.Errorf("config field %s missing from the Plugins form", name)
 		}
 	}
-	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") {
+	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") || !strings.Contains(got["live_auth_ids"].Description, "all available Codex") || !strings.Contains(got["live_auth_ids"].Description, "live_oauth_ids") {
 		t.Fatalf("form descriptions missing defaults")
 	}
 	if cfg.MaxAge() != 30*time.Minute || cfg.ProbeInterval() != 5*time.Minute || !cfg.WritePriorities() || !cfg.PreferUsed() || cfg.ProbeAntigravityClaudeGPT() {

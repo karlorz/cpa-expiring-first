@@ -60,6 +60,7 @@ func newFakeSources() *fakeSources {
 			Group:      "gemini",
 			ObservedAt: now,
 		}},
+		liveConfig: live.Config{AuthIDs: []string{"codex-live.json"}, Strategy: live.DefaultStrategy, FailClosed: true},
 	}
 }
 
@@ -97,12 +98,7 @@ func (f *fakeSources) Config() router.Config {
 	return cfg
 }
 
-func (f *fakeSources) Live() live.Config {
-	if len(f.liveConfig.AuthIDs) > 0 {
-		return f.liveConfig
-	}
-	return live.Config{AuthIDs: []string{"codex-live.json"}, Strategy: live.DefaultStrategy, FailClosed: true}
-}
+func (f *fakeSources) Live() live.Config { return f.liveConfig }
 
 func (f *fakeSources) LiveStats() live.Stats { return f.liveStats }
 
@@ -507,6 +503,31 @@ func TestStatusViewShowsLiveVoiceSchedule(t *testing.T) {
 	}
 	if view.Live.Accounts[1].Eligible || view.Live.Accounts[1].Reason != "Account disabled" {
 		t.Fatalf("second account = %+v, want Karl disabled", view.Live.Accounts[1])
+	}
+	if view.Live.Source != live.PoolSourceAllowlist {
+		t.Fatalf("source = %q, want allowlist", view.Live.Source)
+	}
+}
+
+func TestStatusViewEnablesLiveFromAvailableCodex(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.liveConfig = live.Config{Strategy: live.StrategyFillFirst}
+	sources.candidates = map[string][]pluginapi.SchedulerAuthCandidate{
+		"codex": {
+			{ID: "key.json", Provider: "codex", Priority: 100, Attributes: map[string]string{"auth_kind": "apikey"}},
+			{ID: "alice.json", Provider: "codex", Priority: 98},
+			{ID: "team.json", Provider: "codex", Priority: 99},
+		},
+	}
+	view := handler.statusView(context.Background())
+	if !view.LiveEnabled || view.LivePoolSize != 2 || view.Live.Source != live.PoolSourceAvailable {
+		t.Fatalf("live = enabled=%v pool=%d source=%q, want available Codex pool of 2", view.LiveEnabled, view.LivePoolSize, view.Live.Source)
+	}
+	if view.Live.FailClosed {
+		t.Fatal("fail_closed should not apply to the default available pool")
+	}
+	if len(view.Live.Accounts) != 2 || view.Live.Accounts[0].AuthID != "team.json" || !view.Live.Accounts[0].NextPick {
+		t.Fatalf("accounts = %+v, want Team then Alice", view.Live.Accounts)
 	}
 }
 

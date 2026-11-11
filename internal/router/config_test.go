@@ -28,6 +28,28 @@ func TestParseConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfigLiveOAuthIDsAlias(t *testing.T) {
+	cfg, err := ParseConfig([]byte("live_oauth_ids: [team.json, alice.json]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.LiveAuthIDs()
+	if len(got) != 2 || got[0] != "team.json" || got[1] != "alice.json" {
+		t.Fatalf("LiveAuthIDs() = %v, want live_oauth_ids order", got)
+	}
+}
+
+func TestParseConfigMergesLiveAuthAndOAuthIDs(t *testing.T) {
+	cfg, err := ParseConfig([]byte("live_auth_ids: [team.json]\nlive_oauth_ids: [team.json, alice.json]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.LiveAuthIDs()
+	if len(got) != 2 || got[0] != "team.json" || got[1] != "alice.json" {
+		t.Fatalf("LiveAuthIDs() = %v, want auth_ids first then new oauth ids", got)
+	}
+}
+
 func TestParseConfigLiveStateAndAccessLog(t *testing.T) {
 	raw := "live_state_file: /var/lib/cpa/expiring-first-live.json\nlive_access_log: /CLIProxyAPI/logs/main.log\n"
 	cfg, err := ParseConfig([]byte(raw))

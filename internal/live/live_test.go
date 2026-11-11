@@ -141,10 +141,51 @@ func TestLiveRequestFailOpenDelegatesToBuiltin(t *testing.T) {
 	}
 }
 
-func TestLiveRequestWithoutAllowlistIsUnhandled(t *testing.T) {
+func TestLiveRequestWithoutAllowlistPicksAvailableCodex(t *testing.T) {
 	selector := NewSelector()
-	if resp, handled := selector.Pick(codexRequest(Model, pluginapi.SchedulerAuthCandidate{ID: "a"})); handled {
-		t.Fatalf("Pick() = %+v handled=true, want unhandled so the host decides", resp)
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json", Provider: "codex", Priority: 10},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json", Provider: "codex", Priority: 99},
+		pluginapi.SchedulerAuthCandidate{ID: "key.json", Provider: "codex", Attributes: map[string]string{"auth_kind": "apikey"}},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want available Codex fill-first (alice.json)", resp, handled)
+	}
+}
+
+func TestLiveRequestWithoutAllowlistUsesAllAvailableThenSkipsCooling(t *testing.T) {
+	selector := NewSelector()
+	selector.NoteHostStates([]HostState{{
+		AuthID:         "team.json",
+		NextRetryAfter: time.Now().Add(time.Hour),
+	}}, time.Now())
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json", Provider: "codex", Priority: 100},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json", Provider: "codex", Priority: 90},
+		pluginapi.SchedulerAuthCandidate{ID: "karl.json", Provider: "codex", Priority: 80},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want next of all available OAuth after Team cooldown", resp, handled)
+	}
+}
+
+func TestLiveRequestWithoutAllowlistUnhandledWhenNoneEligible(t *testing.T) {
+	selector := NewSelector()
+	selector.NoteHostStates([]HostState{{
+		AuthID:         "team.json",
+		NextRetryAfter: time.Now().Add(time.Hour),
+	}}, time.Now())
+	if resp, handled := selector.Pick(codexRequest(Model, pluginapi.SchedulerAuthCandidate{ID: "team.json", Provider: "codex"})); handled {
+		t.Fatalf("Pick() = %+v handled=true, want unhandled when no available Live source", resp)
+	}
+}
+
+func TestLiveRequestWithoutAllowlistIgnoresAPIKey(t *testing.T) {
+	selector := NewSelector()
+	if resp, handled := selector.Pick(codexRequest(Model, pluginapi.SchedulerAuthCandidate{
+		ID: "key.json", Provider: "codex", Attributes: map[string]string{"auth_kind": "apikey"},
+	})); handled {
+		t.Fatalf("Pick() = %+v handled=true, want unhandled for an API key", resp)
 	}
 }
 

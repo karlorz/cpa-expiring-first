@@ -97,7 +97,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Live Voice</h2>
-    <p class="muted">Live next pick follows live_auth_ids among host-enabled credentials, skipping disabled, cooling, and Live usage_limit_reached accounts. In use is the last Live pick from the last two minutes. Last used stays until a later Live pick; both survive a plugin reload when live_state_file is set. Host listing often omits Codex Live weekly 429s; those deadlines are remembered, including from a later POST /v1/realtime/calls 429 in live_access_log. Host fill-first is CPA account priority (larger = higher); write_priorities sets exhausted weekly text accounts to 0, so those rows can still be Live-eligible while fill-first skips them. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
+    <p class="muted">Live next pick follows live_auth_ids / live_oauth_ids among host-enabled credentials when that list is set. With no list, all available Codex OAuth credentials are used in host fill-first order (larger account priority first). If none are available, Live stays with the host scheduler. Disabled, cooling, and Live usage_limit_reached accounts are skipped. In use is the last Live pick from the last two minutes. Last used stays until a later Live pick; both survive a plugin reload when live_state_file is set. Host listing often omits Codex Live weekly 429s; those deadlines are remembered, including from a later POST /v1/realtime/calls 429 in live_access_log. Host fill-first is CPA account priority (larger = higher); write_priorities sets exhausted weekly text accounts to 0, so those rows can still be Live-eligible while fill-first skips them. Weekly and five-hour numbers elsewhere on this page are text quota; they are not Live minutes remaining.</p>
     <div class="grid" id="live-metrics"></div>
     <div id="live-order" style="margin-top:0.75rem"></div>
     <h2 style="margin-top:1rem">Recent Live decisions</h2>
@@ -218,6 +218,17 @@ const StatusHTML = `<!doctype html>
     }).join(' · ');
   }
 
+  function livePoolLabel(data, live) {
+    data = data || {};
+    live = live || data.live || {};
+    var enabled = live.enabled || data.live_enabled;
+    if (!enabled) { return 'not configured'; }
+    var size = live.pool_size != null ? live.pool_size : data.live_pool_size;
+    var strategy = live.strategy || data.live_strategy || 'fill-first';
+    var source = live.source === 'available' ? ', available' : '';
+    return String(size || 0) + ' (' + strategy + source + ')';
+  }
+
   function metric(label, value) {
     var node = el('div', 'metric');
     node.appendChild(el('div', 'label', label));
@@ -249,6 +260,7 @@ const StatusHTML = `<!doctype html>
     var generated = data.generated_at ? new Date(data.generated_at).toLocaleString() : '';
     document.getElementById('generated').textContent = generated ? 'Updated ' + generated : '';
 
+    var live = data.live || {};
     var readings = data.readings || 0;
     var outcomes = data.probe_outcomes || 0;
     var metrics = document.getElementById('metrics');
@@ -258,7 +270,7 @@ const StatusHTML = `<!doctype html>
       metric('Version', data.version || 'dev'),
       metric('Probe interval', data.probe_interval || '—'),
       metric('Last probe', data.last_probe_at ? new Date(data.last_probe_at).toLocaleString() : 'not yet'),
-      metric('Live pool', data.live_enabled ? String(data.live_pool_size) + ' (' + (data.live_strategy || 'fill-first') + ')' : 'not configured'),
+      metric('Live pool', livePoolLabel(data, live)),
       metric('Pins', (data.pins || []).length),
       metric('Readings / probe outcomes', readings + ' / ' + outcomes),
       metric('Accounts probed OK', (data.accounts_succeeded || 0) + ' of ' + outcomes),
@@ -267,10 +279,9 @@ const StatusHTML = `<!doctype html>
     ];
     replace(metrics, metricNodes);
 
-    var live = data.live || {};
     replace(document.getElementById('live-metrics'), [
-      metric('Pool', live.enabled ? String(live.pool_size || 0) + ' (' + (live.strategy || 'fill-first') + ')' : 'not configured'),
-      metric('Fail closed', live.enabled ? (live.fail_closed ? 'yes' : 'no') : '—'),
+      metric('Pool', livePoolLabel(data, live)),
+      metric('Fail closed', live.source === 'allowlist' ? (live.fail_closed ? 'yes' : 'no') : '—'),
       metric('In use', live.in_use_auth_id || 'idle'),
       metric('Last used', live.last_auth_id || 'none yet'),
       metric('Last used at', live.last_picked_at ? new Date(live.last_picked_at).toLocaleString() : '—'),
@@ -301,7 +312,7 @@ const StatusHTML = `<!doctype html>
     replace(document.getElementById('live-order'), [
       live.enabled
         ? table(['Order', 'Role', 'Credential', 'Host state', 'Account priority', 'Reason'], liveRows)
-        : el('div', 'empty', 'No live_auth_ids configured; Live stays with the host scheduler.')
+        : el('div', 'empty', 'No Codex Live credentials available; Live stays with the host scheduler.')
     ]);
     var decisionRows = (live.decisions || []).map(function (decision) {
       return [

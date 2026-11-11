@@ -1,3 +1,7 @@
+## v0.3.15
+
+- Default Live Voice to **all available Codex OAuth** credentials when `live_auth_ids` / `live_oauth_ids` is empty, in host fill-first order. API keys are skipped. If none are present or eligible, Live stays with the host scheduler. An explicit list still wins, including `fail_closed`. `live_oauth_ids` is accepted as an alias of `live_auth_ids`.
+
 ## v0.3.14
 
 - Probe FreeTier WorkBuddy (`workbuddyglobal`, `workbuddycn`) credit packages in-process and rank them on Expiring First. Remaining/total credits map to used percent; empty packs such as `0 / 440` count as exhausted (priority 0).

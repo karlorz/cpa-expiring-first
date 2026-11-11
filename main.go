@@ -416,8 +416,9 @@ func pick(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode scheduler request: %w", errUnmarshal)
 	}
 	now := time.Now()
-	// Live Voice first. A Live request is never answered by the weekly-soonest ranking: with no
-	// configured live_auth_ids it stays unhandled, so the host's built-in scheduler decides.
+	// Live Voice first. A Live request is never answered by the weekly-soonest ranking. With
+	// live_auth_ids, fill-first follows that list. With none, available Codex OAuth credentials
+	// are used; if none are eligible the request stays unhandled so the host scheduler decides.
 	if live.IsLiveRequest(req) {
 		if files, errList := listHostAuthFiles(); errList == nil {
 			liveSelector.NoteHostStates(liveHostStates(files), now)
@@ -711,10 +712,10 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "probe_antigravity_claude_gpt", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only."},
 		{Name: "write_priorities", Type: pluginapi.ConfigFieldTypeBoolean, Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher) so CPA fill-first follows that queue. Default true."},
 		{Name: "prefer_used", Type: pluginapi.ConfigFieldTypeBoolean, Description: "For FreeTier WorkBuddy accounts, rank credentials that already have usage ahead of unused (0% used) ones, so fresh accounts stay last. Default true."},
-		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Default empty: host built-in scheduler."},
+		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Alias: live_oauth_ids. Default empty: all available Codex OAuth credentials; if none, host built-in scheduler."},
 		{Name: "live_state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute path of a JSON file that keeps last-used Live picks and remembered Live usage-limit deadlines across reloads. Default empty: memory only."},
 		{Name: "live_access_log", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute gin access-log path. A POST /v1/realtime/calls 429 after the last Live pick is remembered as a Live usage limit. Default empty: do not scan logs."},
-		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true."},
+		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true. Does not apply to the default available-Codex pool."},
 	}
 }
 

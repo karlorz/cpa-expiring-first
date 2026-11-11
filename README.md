@@ -81,12 +81,12 @@ Both modes record the serving account as the route's pin, so sticky routing cont
 
 Codex Live/Realtime traffic (`gpt-live-1-codex`) is decided by its own allowlist, ahead of the weekly-soonest ranking:
 
-- Configure `live_auth_ids` with the credential IDs allowed to serve Live traffic, in fill-first order.
-- A Live request is never answered by the weekly-soonest ranking. With **no** `live_auth_ids` configured, the plugin leaves the request unhandled, so CLIProxyAPI's built-in scheduler decides, exactly as if this plugin were not installed.
+- Configure `live_auth_ids` (alias `live_oauth_ids`) with the credential IDs allowed to serve Live traffic, in fill-first order.
+- A Live request is never answered by the weekly-soonest ranking. With **no** list, the plugin uses **all available Codex OAuth** credentials in host fill-first order (larger account priority first). API-key credentials are skipped. If none are present or eligible, the request stays unhandled so CLIProxyAPI's built-in scheduler decides.
 - With an allowlist, the plugin picks the first **eligible** candidate in `live_auth_ids` order (`fill-first`). It skips host-disabled, unavailable, cooling, and Live `usage_limit_reached` credentials, then continues down the list. Host credential priority, including integers written by `write_priorities`, does not change that order.
-- `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no allowlisted credential is available; `fail_closed: false` delegates to the built-in scheduler instead.
+- `fail_closed: true` (default) rejects the request with `live_oauth_unavailable` when no **allowlisted** credential is available; `fail_closed: false` delegates to the built-in scheduler instead. `fail_closed` does not apply to the default available-Codex pool.
 - Codex Live weekly 429s often never appear on `host.auth.list`. The plugin remembers those deadlines from a StatusMessage when present, and from a later `POST /v1/realtime/calls` 429 in `live_access_log` (default off). `live_state_file` keeps **in use**, **last used**, and remembered Live limits across reloads.
-- The status page **Live Voice** section shows that pool in `live_auth_ids` order, host eligibility, **in use** (last Live pick within two minutes), **last used**, last skips, the predicted next Live pick, the host fill-first pick (account priority), pick/reject counts, and **Recent Live decisions** (last 32 picks, rejects, and skips). That audit is the table from the old `cpa-live-voice` page and is persisted in `live_state_file`. Live usage-limit rows stay skipped until the reset time. Weekly and five-hour numbers on the rest of the page are text quota, not Live minutes. `write_priorities` can set exhausted weekly-text accounts to priority 0; those stay Live-eligible unless the host has actually disabled them or they have a Live usage limit.
+- The status page **Live Voice** section shows that pool (allowlist order, or available Codex OAuth in host fill-first order), host eligibility, **in use** (last Live pick within two minutes), **last used**, last skips, the predicted next Live pick, the host fill-first pick (account priority), pick/reject counts, and **Recent Live decisions** (last 32 picks, rejects, and skips). That audit is the table from the old `cpa-live-voice` page and is persisted in `live_state_file`. Live usage-limit rows stay skipped until the reset time. Weekly and five-hour numbers on the rest of the page are text quota, not Live minutes. `write_priorities` can set exhausted weekly-text accounts to priority 0; those stay Live-eligible unless the host has actually disabled them or they have a Live usage limit.
 - Each Live pick is logged as `expiring-first live: picked <id>` with sanitized skip reasons. A remembered 429 is logged without the upstream JSON. Status messages and emails are not logged.
 
 This is the same classification and selection as [karlorz/cpa-live-voice](https://github.com/karlorz/cpa-live-voice), folded into this plugin so the two no longer have to run together.
@@ -234,7 +234,9 @@ plugins:
       # For FreeTier WorkBuddy, rank accounts that already have usage ahead of
       # unused (0% used) accounts. Default true.
       prefer_used: true
-      # Credential IDs allowed for Codex Live/Realtime voice traffic. Omit to leave Live to the host.
+      # Credential IDs allowed for Codex Live/Realtime voice traffic.
+      # Omit to use all available Codex OAuth credentials; if none, Live stays with the host.
+      # live_oauth_ids is the same list.
       live_auth_ids: [codex-live-account.json]
       # Optional absolute path that keeps last-used Live picks and remembered Live limits.
       live_state_file: /home/me/cliproxyapi/expiring-first-live.json

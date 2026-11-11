@@ -1,13 +1,15 @@
 // Package live selects credentials for CLIProxyAPI's Codex Live/Realtime path.
 //
 // The classifier and the Live branch of the selector are copied from cpa-live-voice so this
-// plugin can be the only scheduler installed. Unlike that plugin, an unconfigured Live request
-// falls through to the host's built-in scheduler instead of being delegated, and a Live request
-// is never answered by the weekly-soonest ranking.
+// plugin can be the only scheduler installed. A Live request is never answered by the
+// weekly-soonest ranking. With an explicit live_auth_ids allowlist, fill-first follows that
+// order. With no allowlist, available Codex OAuth credentials are used in host fill-first
+// order; if none are present or eligible, the request falls through to the host scheduler.
 package live
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -44,20 +46,28 @@ const (
 // DefaultStrategy is the selection order across allowlisted Live credentials.
 const DefaultStrategy = StrategyFillFirst
 
+// Pool source labels for the status page.
+const (
+	// PoolSourceAllowlist is an explicit live_auth_ids list.
+	PoolSourceAllowlist = "allowlist"
+	// PoolSourceAvailable is the default pool of host Codex OAuth credentials.
+	PoolSourceAvailable = "available"
+)
+
 // Config is the validated Live Voice configuration.
 type Config struct {
-	// AuthIDs is the allowlist of credential IDs Live traffic may use; empty disables the Live
-	// branch entirely.
+	// AuthIDs is the optional allowlist of credential IDs Live traffic may use, in fill-first
+	// order. Empty means: use available Codex OAuth credentials in host fill-first order.
 	AuthIDs []string
 	// Strategy orders the matching credentials: fill-first or round-robin.
 	Strategy string
 	// FailClosed rejects a Live request when no allowlisted credential is available, instead of
-	// delegating to the built-in scheduler.
+	// delegating to the built-in scheduler. It applies only when AuthIDs is set.
 	FailClosed bool
 }
 
-// Enabled reports whether Live requests are handled by this plugin.
-func (c Config) Enabled() bool {
+// AllowlistConfigured reports whether live_auth_ids was set.
+func (c Config) AllowlistConfigured() bool {
 	return len(c.AuthIDs) > 0
 }
 
@@ -132,7 +142,8 @@ type Selector struct {
 	rrIndex uint64
 }
 
-// NewSelector returns a selector with no allowlist, which leaves Live requests to the host.
+// NewSelector returns a selector with no allowlist. Live then uses available Codex OAuth
+// credentials, or the host scheduler when none are eligible.
 func NewSelector() *Selector {
 	return &Selector{config: Config{Strategy: DefaultStrategy}}
 }
@@ -286,9 +297,9 @@ func hasProvider(req pluginapi.SchedulerPickRequest, provider string) bool {
 	return false
 }
 
-// Pick handles one Live request. handled is false when the request is not a Live request or no
-// allowlist is configured, so the caller can fall through to the weekly-soonest scheduler and
-// the host's built-in scheduler.
+// Pick handles one Live request. handled is false when the request is not a Live request, or
+// when no allowlist is set and no eligible Codex OAuth credential is available, so the caller
+// can leave the request to the host's built-in scheduler.
 func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool) {
 	if !IsLiveRequest(req) {
 		return pluginapi.SchedulerPickResponse{}, false
@@ -300,25 +311,11 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 	retries := s.retries
 	blocked := s.blocked
 	s.mu.Unlock()
-	if !config.Enabled() {
-		return pluginapi.SchedulerPickResponse{}, false
-	}
 
-	allowlist := make(map[string]struct{}, len(config.AuthIDs))
-	for _, id := range config.AuthIDs {
-		allowlist[id] = struct{}{}
-	}
-	matching := make([]pluginapi.SchedulerAuthCandidate, 0, len(req.Candidates))
-	for _, candidate := range req.Candidates {
-		if candidateMatchesAllowlist(candidate, allowlist) {
-			matching = append(matching, candidate)
-		}
-	}
-
-	matching = orderByAllowlist(matching, config.AuthIDs)
-	ready := make([]pluginapi.SchedulerAuthCandidate, 0, len(matching))
+	pool := ResolvePool(req.Candidates, config)
+	ready := make([]pluginapi.SchedulerAuthCandidate, 0, len(pool.Matching))
 	skipped := make([]Skip, 0)
-	for _, candidate := range matching {
+	for _, candidate := range pool.Matching {
 		if reason := exclusionReason(candidate, limits, retries, blocked, now); reason != "" {
 			skipped = append(skipped, Skip{AuthID: strings.TrimSpace(candidate.ID), Reason: reason})
 			continue
@@ -327,6 +324,9 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 	}
 
 	if len(ready) == 0 {
+		if !config.AllowlistConfigured() {
+			return pluginapi.SchedulerPickResponse{}, false
+		}
 		if config.FailClosed {
 			resp := pluginapi.SchedulerPickResponse{
 				Handled:      true,
@@ -334,10 +334,10 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 				RejectCode:   RejectCodeLiveUnavailable,
 				RejectReason: SanitizedReasonLiveNoAuth,
 			}
-			s.record(resp, skipped, len(matching), 0)
+			s.record(resp, skipped, len(pool.Matching), 0)
 			return resp, true
 		}
-		s.record(pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, skipped, len(matching), 0)
+		s.record(pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, skipped, len(pool.Matching), 0)
 		return pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: config.Strategy}, true
 	}
 
@@ -350,7 +350,7 @@ func (s *Selector) Pick(req pluginapi.SchedulerPickRequest) (pluginapi.Scheduler
 		selectedID = strings.TrimSpace(ready[index].ID)
 	}
 	resp := pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}
-	s.record(resp, skipped, len(matching), len(ready))
+	s.record(resp, skipped, len(pool.Matching), len(ready))
 	return resp, true
 }
 
@@ -404,6 +404,102 @@ func copySkips(in []Skip) []Skip {
 	out := make([]Skip, len(in))
 	copy(out, in)
 	return out
+}
+
+// ResolvedPool is the Live credential set for picking and the status page.
+type ResolvedPool struct {
+	// Source is allowlist, available, or empty when there is no default pool.
+	Source string
+	// IDs is the status-page list: configured live_auth_ids, or capable Codex OAuth IDs.
+	IDs []string
+	// Matching is host candidates in pick order. Allowlisted IDs missing from the host are omitted.
+	Matching []pluginapi.SchedulerAuthCandidate
+}
+
+// ResolvePool is the single allowlist-vs-available Live pool.
+func ResolvePool(candidates []pluginapi.SchedulerAuthCandidate, config Config) ResolvedPool {
+	if config.AllowlistConfigured() {
+		allowlist := make(map[string]struct{}, len(config.AuthIDs))
+		for _, id := range config.AuthIDs {
+			allowlist[id] = struct{}{}
+		}
+		matching := make([]pluginapi.SchedulerAuthCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidateMatchesAllowlist(candidate, allowlist) {
+				matching = append(matching, candidate)
+			}
+		}
+		return ResolvedPool{
+			Source:   PoolSourceAllowlist,
+			IDs:      append([]string(nil), config.AuthIDs...),
+			Matching: orderByAllowlist(matching, config.AuthIDs),
+		}
+	}
+	matching := orderByHostFillFirst(liveCapableCandidates(candidates))
+	ids := make([]string, 0, len(matching))
+	for _, candidate := range matching {
+		ids = append(ids, strings.TrimSpace(candidate.ID))
+	}
+	source := ""
+	if len(ids) > 0 {
+		source = PoolSourceAvailable
+	}
+	return ResolvedPool{Source: source, IDs: ids, Matching: matching}
+}
+
+// PoolAuthIDs is the Live pool shown on the status page: the allowlist, or available Codex OAuth.
+func PoolAuthIDs(config Config, candidates []pluginapi.SchedulerAuthCandidate) []string {
+	return ResolvePool(candidates, config).IDs
+}
+
+// PoolSource reports how the Live pool was chosen.
+func PoolSource(config Config, candidates []pluginapi.SchedulerAuthCandidate) string {
+	return ResolvePool(candidates, config).Source
+}
+
+func liveCapableCandidates(candidates []pluginapi.SchedulerAuthCandidate) []pluginapi.SchedulerAuthCandidate {
+	out := make([]pluginapi.SchedulerAuthCandidate, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if !liveCapable(candidate) {
+			continue
+		}
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func liveCapable(candidate pluginapi.SchedulerAuthCandidate) bool {
+	if candidate.Attributes != nil && isExplicitAPIKeyKind(candidate.Attributes["auth_kind"]) {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+	if provider != "" && provider != Provider {
+		return false
+	}
+	return strings.TrimSpace(candidate.ID) != ""
+}
+
+func orderByHostFillFirst(matching []pluginapi.SchedulerAuthCandidate) []pluginapi.SchedulerAuthCandidate {
+	if len(matching) <= 1 {
+		return matching
+	}
+	sort.Slice(matching, func(i, j int) bool {
+		pi, pj := accountPriority(matching[i]), accountPriority(matching[j])
+		if pi != pj {
+			return pi > pj
+		}
+		return strings.TrimSpace(matching[i].ID) < strings.TrimSpace(matching[j].ID)
+	})
+	return matching
 }
 
 // orderByAllowlist returns matching credentials in live_auth_ids order. Host candidate order is

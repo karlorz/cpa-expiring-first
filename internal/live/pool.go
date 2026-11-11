@@ -27,8 +27,9 @@ type PoolRow struct {
 	Reason         string     `json:"reason"`
 }
 
-// DescribePool returns live_auth_ids in configured fill-first order, joined with host candidate
-// state. Weekly/five-hour text quota is not Live remaining and is not included here.
+// DescribePool returns the Live pool in fill-first order, joined with host candidate state.
+// An explicit live_auth_ids list wins; otherwise available Codex OAuth credentials are used.
+// Weekly/five-hour text quota is not Live remaining and is not included here.
 func DescribePool(
 	config Config,
 	candidates []pluginapi.SchedulerAuthCandidate,
@@ -37,11 +38,23 @@ func DescribePool(
 	limits map[string]time.Time,
 	now time.Time,
 ) []PoolRow {
-	rows := make([]PoolRow, 0, len(config.AuthIDs))
+	return DescribeIDs(ResolvePool(candidates, config).IDs, candidates, lastAuthID, lastAt, limits, now)
+}
+
+// DescribeIDs joins a resolved Live ID list with host candidate state.
+func DescribeIDs(
+	authIDs []string,
+	candidates []pluginapi.SchedulerAuthCandidate,
+	lastAuthID string,
+	lastAt time.Time,
+	limits map[string]time.Time,
+	now time.Time,
+) []PoolRow {
+	rows := make([]PoolRow, 0, len(authIDs))
 	lastAuthID = strings.TrimSpace(lastAuthID)
 	inUse := lastAuthID != "" && !lastAt.IsZero() && !now.Before(lastAt) && now.Sub(lastAt) <= InUseWindow
 	nextMarked := false
-	for i, configured := range config.AuthIDs {
+	for i, configured := range authIDs {
 		id := strings.TrimSpace(configured)
 		if id == "" {
 			continue

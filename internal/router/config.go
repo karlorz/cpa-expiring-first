@@ -46,7 +46,8 @@ type Config struct {
 	clearCooldowns bool
 	// probeInterval is how often the in-process probes refresh readings.
 	probeInterval time.Duration
-	// liveAuthIDs is the allowlist for Codex Live requests; empty leaves Live traffic to the host.
+	// liveAuthIDs is the optional allowlist for Codex Live requests. Empty uses available Codex
+	// OAuth credentials; if none are eligible, Live traffic stays with the host.
 	liveAuthIDs []string
 	// liveStateFile is an absolute path that keeps last-used Live picks and remembered Live
 	// usage-limit deadlines across reloads; empty keeps them in memory only.
@@ -110,7 +111,7 @@ func (c Config) ProbeInterval() time.Duration {
 	return c.probeInterval
 }
 
-// LiveAuthIDs reports the Codex Live allowlist; empty leaves Live requests to the host.
+// LiveAuthIDs reports the Codex Live allowlist; empty uses available Codex OAuth credentials.
 func (c Config) LiveAuthIDs() []string {
 	return c.liveAuthIDs
 }
@@ -189,6 +190,7 @@ type rawConfig struct {
 	ClearCooldowns            *bool          `yaml:"clear_stale_cooldowns"`
 	ProbeInterval             string         `yaml:"probe_interval"`
 	LiveAuthIDs               []string       `yaml:"live_auth_ids"`
+	LiveOAuthIDs              []string       `yaml:"live_oauth_ids"`
 	LiveStateFile             string         `yaml:"live_state_file"`
 	LiveAccessLog             string         `yaml:"live_access_log"`
 	FailClosed                *bool          `yaml:"fail_closed"`
@@ -255,16 +257,23 @@ func ParseConfig(raw []byte) (Config, error) {
 		cfg.preferUsed = *parsed.PreferUsed
 	}
 
-	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs))
-	for _, id := range parsed.LiveAuthIDs {
-		if id = strings.TrimSpace(id); id == "" {
-			continue
+	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs)+len(parsed.LiveOAuthIDs))
+	appendLiveID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
 		}
 		if _, okSeen := seenLive[id]; okSeen {
-			continue
+			return
 		}
 		seenLive[id] = struct{}{}
 		cfg.liveAuthIDs = append(cfg.liveAuthIDs, id)
+	}
+	for _, id := range parsed.LiveAuthIDs {
+		appendLiveID(id)
+	}
+	for _, id := range parsed.LiveOAuthIDs {
+		appendLiveID(id)
 	}
 
 	for _, provider := range parsed.Providers {
