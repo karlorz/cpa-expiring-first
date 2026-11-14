@@ -1,3 +1,7 @@
+## v0.3.16
+
+- Retract remembered Live usage limits when `host.auth.list` still includes the credential without `usage_limit_reached` and the remember is longer than 1h. Access-log `POST /v1/realtime/calls` 429s without `resets_at` are remembered for **1h**, matching the StatusMessage fallback, instead of a 7-day weekly guess that stayed stale after Live minutes reset.
+
 ## v0.3.15
 
 - Default Live Voice to **all available Codex OAuth** credentials when `live_auth_ids` / `live_oauth_ids` is empty, in host fill-first order. API keys are skipped. If none are present or eligible, Live stays with the host scheduler. An explicit list still wins, including `fail_closed`. `live_oauth_ids` is accepted as an alias of `live_auth_ids`.

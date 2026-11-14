@@ -224,7 +224,7 @@ func TestConfigFieldsDeclarePluginDefaults(t *testing.T) {
 			t.Errorf("config field %s missing from the Plugins form", name)
 		}
 	}
-	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") || !strings.Contains(got["live_auth_ids"].Description, "all available Codex") || !strings.Contains(got["live_auth_ids"].Description, "live_oauth_ids") {
+	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") || !strings.Contains(got["live_auth_ids"].Description, "all available Codex") || !strings.Contains(got["live_auth_ids"].Description, "live_oauth_ids") || !strings.Contains(got["live_access_log"].Description, "1h") {
 		t.Fatalf("form descriptions missing defaults")
 	}
 	if cfg.MaxAge() != 30*time.Minute || cfg.ProbeInterval() != 5*time.Minute || !cfg.WritePriorities() || !cfg.PreferUsed() || cfg.ProbeAntigravityClaudeGPT() {

@@ -53,7 +53,10 @@ func MatchesAllowlist(authID string, authIDs []string) bool {
 }
 
 // NoteHostStates replaces host-listing skips. A usage_limit_reached deadline is copied into
-// remembered limits so a later listing that omits StatusMessage does not revive that account.
+// remembered limits so a later listing that omits StatusMessage does not revive that account
+// during AccessLogLimitWindow. Longer unconfirmed remembers are dropped when the listing
+// still includes the credential without usage_limit_reached, so a seven-day access-log guess
+// cannot outlive an actual Live reset.
 func (s *Selector) NoteHostStates(states []HostState, now time.Time) {
 	if now.IsZero() {
 		now = time.Now()
@@ -61,6 +64,7 @@ func (s *Selector) NoteHostStates(states []HostState, now time.Time) {
 	limits := make(map[string]time.Time)
 	retries := make(map[string]time.Time)
 	blocked := make(map[string]string)
+	listedWithoutLimit := make(map[string]struct{})
 	for _, state := range states {
 		id := strings.TrimSpace(state.AuthID)
 		if id == "" {
@@ -70,6 +74,10 @@ func (s *Selector) NoteHostStates(states []HostState, now time.Time) {
 		if until, _, ok := parseUsageLimit(state.StatusMessage, now); ok {
 			for _, alias := range aliases {
 				limits[alias] = until
+			}
+		} else {
+			for _, alias := range aliases {
+				listedWithoutLimit[alias] = struct{}{}
 			}
 		}
 		if state.NextRetryAfter.After(now) {
@@ -97,7 +105,22 @@ func (s *Selector) NoteHostStates(states []HostState, now time.Time) {
 	if s.remembered == nil {
 		s.remembered = make(map[string]time.Time)
 	}
-	mergeLimitMap(s.remembered, limits)
+	for id, until := range limits {
+		s.remembered[id] = until
+	}
+	guessHorizon := now.Add(AccessLogLimitWindow)
+	for id, until := range s.remembered {
+		if !until.After(now) {
+			delete(s.remembered, id)
+			continue
+		}
+		if _, confirmed := limits[id]; confirmed {
+			continue
+		}
+		if _, seen := listedWithoutLimit[id]; seen && until.After(guessHorizon) {
+			delete(s.remembered, id)
+		}
+	}
 }
 
 // RememberLimit keeps a Live usage-limit deadline after the host listing drops it. until is the

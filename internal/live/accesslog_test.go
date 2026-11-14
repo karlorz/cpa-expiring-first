@@ -25,6 +25,15 @@ func TestLastRealtimeCallAfterIgnoresHangup429(t *testing.T) {
 	}
 }
 
+func TestAccessLogLimitWindowMatchesStatusMessageFallback(t *testing.T) {
+	if AccessLogLimitWindow != liveLimitFallback {
+		t.Fatalf("AccessLogLimitWindow = %s, want liveLimitFallback %s", AccessLogLimitWindow, liveLimitFallback)
+	}
+	if AccessLogLimitWindow != time.Hour {
+		t.Fatalf("AccessLogLimitWindow = %s, want 1h", AccessLogLimitWindow)
+	}
+}
+
 func TestLastRealtimeCallAfterIgnoresOlderLines(t *testing.T) {
 	raw := []byte(`[2026-11-05 23:37:18] [warn ] 429 | 743ms | POST    "/v1/realtime/calls"
 `)

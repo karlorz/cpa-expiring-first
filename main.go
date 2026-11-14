@@ -315,7 +315,8 @@ func saveLiveState() {
 }
 
 // noteLiveAccessLog remembers a Live usage limit when the previous Live pick was followed by a
-// POST /v1/realtime/calls 429. The host listing does not keep that Codex Live weekly error.
+// POST /v1/realtime/calls 429. The host listing often omits that Codex Live error; without a
+// parsed resets_at the skip lasts AccessLogLimitWindow (one hour), not a week.
 func noteLiveAccessLog() {
 	liveAccessLogMu.Lock()
 	path := liveAccessLogPath
@@ -714,7 +715,7 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "prefer_used", Type: pluginapi.ConfigFieldTypeBoolean, Description: "For FreeTier WorkBuddy accounts, rank credentials that already have usage ahead of unused (0% used) ones, so fresh accounts stay last. Default true."},
 		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Alias: live_oauth_ids. Default empty: all available Codex OAuth credentials; if none, host built-in scheduler."},
 		{Name: "live_state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute path of a JSON file that keeps last-used Live picks and remembered Live usage-limit deadlines across reloads. Default empty: memory only."},
-		{Name: "live_access_log", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute gin access-log path. A POST /v1/realtime/calls 429 after the last Live pick is remembered as a Live usage limit. Default empty: do not scan logs."},
+		{Name: "live_access_log", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute gin access-log path. A POST /v1/realtime/calls 429 after the last Live pick is remembered for 1h when Codex did not give resets_at. Default empty: do not scan logs."},
 		{Name: "fail_closed", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Reject a Live request when no configured live_auth_ids credential is available. Default true. Does not apply to the default available-Codex pool."},
 	}
 }
@@ -865,6 +866,21 @@ func (consoleSources) Candidates(ctx context.Context) (map[string][]pluginapi.Sc
 	if errUnmarshal := json.Unmarshal(result, &list); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode preview candidates: %w", errUnmarshal)
 	}
+	states := make([]live.HostState, 0, len(list.Files))
+	for _, file := range list.Files {
+		if file.ID == "" {
+			continue
+		}
+		states = append(states, live.HostState{
+			AuthID:         file.ID,
+			Disabled:       file.Disabled,
+			Unavailable:    file.Unavailable,
+			NextRetryAfter: file.NextRetryAfter,
+			StatusMessage:  file.StatusMessage,
+		})
+	}
+	liveSelector.NoteHostStates(states, time.Now())
+	saveLiveState()
 	return previewCandidates(list.Files), nil
 }
 

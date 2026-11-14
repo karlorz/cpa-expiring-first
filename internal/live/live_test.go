@@ -229,10 +229,10 @@ func TestLivePickSkipsHostCooldown(t *testing.T) {
 	}
 }
 
-func TestRememberLimitSurvivesEmptyHostListing(t *testing.T) {
+func TestRememberLimitSurvivesEmptyHostListingWithinHour(t *testing.T) {
 	selector := NewSelector()
 	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
-	until := time.Now().UTC().Add(48 * time.Hour)
+	until := time.Now().UTC().Add(30 * time.Minute)
 	selector.RememberLimit("team.json", until)
 	selector.NoteHostStates([]HostState{{AuthID: "team.json"}, {AuthID: "alice.json"}}, time.Now())
 
@@ -246,6 +246,67 @@ func TestRememberLimitSurvivesEmptyHostListing(t *testing.T) {
 	stats := selector.Stats()
 	if untilGot, ok := stats.Limits["team.json"]; !ok || !untilGot.Equal(until) {
 		t.Fatalf("Stats.Limits = %+v, want remembered team.json until %s", stats.Limits, until)
+	}
+}
+
+func TestNoteHostStatesDropsUnconfirmedLongRemember(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	selector.RememberLimit("team.json", time.Now().UTC().Add(7*24*time.Hour))
+	selector.NoteHostStates([]HostState{{AuthID: "team.json"}, {AuthID: "alice.json"}}, time.Now())
+
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "team.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want team.json after dropping a stale weekly guess", resp, handled)
+	}
+	if _, ok := selector.Stats().Limits["team.json"]; ok {
+		t.Fatalf("Stats.Limits = %+v, want Team's unconfirmed long remember dropped", selector.Stats().Limits)
+	}
+}
+
+func TestNoteHostStatesKeepsRememberWhenCredentialOmitted(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	until := time.Now().UTC().Add(48 * time.Hour)
+	selector.RememberLimit("team.json", until)
+	selector.NoteHostStates([]HostState{{AuthID: "alice.json"}}, time.Now())
+
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want alice.json while Team is omitted from the listing", resp, handled)
+	}
+	if untilGot, ok := selector.Stats().Limits["team.json"]; !ok || !untilGot.Equal(until) {
+		t.Fatalf("Stats.Limits = %+v, want remembered team.json kept when listing omitted it", selector.Stats().Limits)
+	}
+}
+
+func TestNoteHostStatesPrefersStatusMessageReset(t *testing.T) {
+	selector := NewSelector()
+	selector.Configure(Config{AuthIDs: []string{"team.json", "alice.json"}, FailClosed: true})
+	now := time.Now().UTC()
+	selector.RememberLimit("team.json", now.Add(7*24*time.Hour))
+	resetsAt := now.Add(2 * time.Hour).Unix()
+	selector.NoteHostStates([]HostState{{
+		AuthID:        "team.json",
+		StatusMessage: `{"error":{"type":"usage_limit_reached","plan_type":"team","resets_at":` + strconv.FormatInt(resetsAt, 10) + `}}`,
+	}, {AuthID: "alice.json"}}, now)
+
+	until, ok := selector.Stats().Limits["team.json"]
+	if !ok || until.Unix() != resetsAt {
+		t.Fatalf("Stats.Limits = %+v, want StatusMessage reset %d", selector.Stats().Limits, resetsAt)
+	}
+	resp, handled := selector.Pick(codexRequest(Model,
+		pluginapi.SchedulerAuthCandidate{ID: "team.json"},
+		pluginapi.SchedulerAuthCandidate{ID: "alice.json"},
+	))
+	if !handled || resp.AuthID != "alice.json" {
+		t.Fatalf("Pick() = %+v handled=%v, want alice.json while Team has a confirmed Live limit", resp, handled)
 	}
 }
 

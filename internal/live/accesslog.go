@@ -7,7 +7,9 @@ import (
 )
 
 // AccessLogLimitWindow is how long a Live POST 429 without a parsed reset is remembered.
-const AccessLogLimitWindow = 7 * 24 * time.Hour
+// Match the StatusMessage fallback: a seven-day guess stayed stale after Live minutes
+// actually reset, and host.auth.list usually omits the 429 JSON so it never retracted.
+const AccessLogLimitWindow = liveLimitFallback
 
 var realtimeCallLine = regexp.MustCompile(
 	`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*(201|429)\s+\|.*POST\s+\x22/v1/realtime/calls\x22`,

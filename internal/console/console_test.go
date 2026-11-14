@@ -148,7 +148,7 @@ func TestStatusPageNamesCredentialsAndEmbedsPayload(t *testing.T) {
 	if !strings.Contains(body, "Routing previews") || !strings.Contains(body, "Weekly-soonest") {
 		t.Fatal("page does not explain the ranking and the previews")
 	}
-	if !strings.Contains(body, "Live Voice") || !strings.Contains(body, "not Live minutes remaining") {
+	if !strings.Contains(body, "Live Voice") || !strings.Contains(body, "not Live minutes remaining") || !strings.Contains(body, "remembered for 1h") {
 		t.Fatal("page does not explain Live Voice pool usage and scheduling")
 	}
 	if !strings.Contains(body, "Host fill-first") || !strings.Contains(body, "Next Live pick") {
