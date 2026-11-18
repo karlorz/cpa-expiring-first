@@ -1,3 +1,8 @@
+## v0.3.18
+
+- Schedule outcome weekly and five-hour cells use the same usage bar as Other quota readings (`% used / % left` plus remaining bar and reset).
+- A probed provider still gets a fill-first priority table after restart even without `preview_models` or a pin, so Codex websocket pools keep the account-priority table.
+
 ## v0.3.17
 
 - Rank unused Codex weekly windows (0% used) first (`prefer_unused_codex`, default true) and write those integers into credential priority, so real traffic starts the OpenAI weekly timer instead of leaving 100% / 6d accounts at the back of the queue.

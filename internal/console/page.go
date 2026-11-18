@@ -57,6 +57,8 @@ const StatusHTML = `<!doctype html>
   .bar span { position: absolute; inset: 0 auto 0 0; background: var(--primary); }
   .bar span.warn { background: var(--warning); }
   .bar span.bad { background: var(--danger); }
+  .usage { min-width: 110px; }
+  .usage .bar { margin-top: 0.25rem; }
   .empty { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
   button, input { font: inherit; }
@@ -211,6 +213,23 @@ const StatusHTML = `<!doctype html>
     return wrap;
   }
 
+  function usageCell(window, fallback, withReset) {
+    if (!window || (window.remaining_percent == null && window.used_percent == null)) {
+      return fallback || '—';
+    }
+    var left = window.remaining_percent;
+    if (left == null) { left = 100 - window.used_percent; }
+    left = Math.max(0, Math.min(100, left));
+    var box = el('div', 'usage');
+    box.appendChild(el('code', null, (100 - left).toFixed(0) + '% used / ' + left.toFixed(0) + '% left'));
+    box.appendChild(remainingBar(left));
+    if (withReset) {
+      var reset = resetText(window);
+      if (reset && reset !== '—') { box.appendChild(el('div', 'muted', reset)); }
+    }
+    return box;
+  }
+
   function liveSkipText(skips) {
     if (!skips || !skips.length) { return 'none'; }
     return skips.map(function (skip) {
@@ -354,7 +373,7 @@ const StatusHTML = `<!doctype html>
         var result = account.order ? ('#' + account.order) : 'Excluded';
         if (account.next_pick) { result += ' · next pick'; }
         if (account.last_selected) { result += ' · last selected'; }
-        return [result, account.auth, account.account_priority, account.weekly || '—', account.five_hour || '—', account.reason];
+        return [result, account.auth, account.account_priority, usageCell(account.weekly_window, account.weekly, true), usageCell(account.five_hour_window, account.five_hour, true), account.reason];
       });
       section.appendChild(table(['Order / outcome', 'Credential', 'Account priority', 'Weekly', 'Five-hour', 'Reason'], rows));
       orderSections.push(section);
@@ -382,9 +401,7 @@ const StatusHTML = `<!doctype html>
         return;
       }
       account.windows.forEach(function (window, index) {
-        var usage = el('div');
-        usage.appendChild(el('code', null, (100 - window.remaining_percent).toFixed(0) + '% used / ' + window.remaining_percent.toFixed(0) + '% left'));
-        usage.appendChild(remainingBar(window.remaining_percent));
+        var usage = usageCell(window);
         var state = account.stale ? el('span', 'pill warn', 'stale / ignored') : el('span', window.exhausted ? 'pill bad' : 'pill ok', window.exhausted ? 'exhausted' : 'available');
         quotaRows.push([
           index === 0 ? label : '',

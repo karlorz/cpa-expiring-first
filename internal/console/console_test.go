@@ -373,13 +373,71 @@ func TestPreviewsComeFromConfigAndPinsOnly(t *testing.T) {
 		}
 	}
 
-	// Nothing in the config or the pins means nothing to preview: the page must not fabricate a
-	// provider or model from the probed credentials.
+	// With no configured routes or pins, a provider that already has quota readings still gets
+	// a fill-first order table. Websocket Codex pools depend on this after a restart.
 	sources.previewModels = nil
 	sources.pinned = nil
 	view = handler.statusView(context.Background())
-	if len(view.Previews) != 0 {
-		t.Fatalf("previews = %+v, want none without configured routes or pins", view.Previews)
+	if len(view.Previews) != 1 || view.Previews[0].Provider != "antigravity" || view.Previews[0].Model != "gemini-3.8-flash-high" {
+		t.Fatalf("previews = %+v, want auto schedule table for the probed provider", view.Previews)
+	}
+}
+
+func TestScheduleOutcomeAddsCodexWhenQuotaExistsWithoutPin(t *testing.T) {
+	handler, sources := newTestHandler()
+	sources.previewModels = []router.PreviewModel{{Provider: "antigravity", Model: "gemini-3.8-flash-high"}}
+	sources.pinned = nil
+	sources.quota["codex-primary-account.json"] = router.QuotaAccount{
+		UpdatedAt: now,
+		Windows:   []router.QuotaWindow{{Minutes: 10080, UsedPercent: 0, ResetsAt: now.Add(6 * 24 * time.Hour)}},
+	}
+	view := handler.statusView(context.Background())
+	var sawCodex bool
+	for _, preview := range view.Previews {
+		if preview.Provider == "codex" && preview.Model == "gpt-6.1-sol" {
+			sawCodex = true
+			if len(preview.Accounts) == 0 {
+				t.Fatal("codex schedule table has no priority rows")
+			}
+		}
+	}
+	if !sawCodex {
+		t.Fatalf("previews = %+v, want codex / gpt-6.1-sol fill-first table", view.Previews)
+	}
+}
+
+func TestScheduleOutcomeIncludesUsageWindowsForBars(t *testing.T) {
+	handler, sources := newTestHandler()
+	const authID = "codex-primary-account.json"
+	sources.previewModels = []router.PreviewModel{{Provider: "codex", Model: "gpt-6.1-sol"}}
+	sources.pinned = nil
+	sources.quota[authID] = router.QuotaAccount{
+		UpdatedAt: now,
+		Windows: []router.QuotaWindow{
+			{Minutes: 10080, UsedPercent: 26, ResetsAt: now.Add(48 * time.Hour)},
+			{Minutes: 300, UsedPercent: 0, ResetsAt: now.Add(4 * time.Hour)},
+		},
+	}
+	view := handler.statusView(context.Background())
+	var row *RankingView
+	for i := range view.Previews {
+		if view.Previews[i].Provider != "codex" {
+			continue
+		}
+		for j := range view.Previews[i].Accounts {
+			if view.Previews[i].Accounts[j].Auth == authID {
+				row = &view.Previews[i].Accounts[j]
+			}
+		}
+	}
+	if row == nil || row.WeeklyWindow == nil || row.FiveHourWindow == nil {
+		t.Fatalf("row=%+v, want weekly and five-hour windows for usage bars", row)
+	}
+	if row.WeeklyWindow.RemainingPct != 74 || row.FiveHourWindow.RemainingPct != 100 {
+		t.Fatalf("remaining weekly=%v five-hour=%v", row.WeeklyWindow.RemainingPct, row.FiveHourWindow.RemainingPct)
+	}
+	if !strings.Contains(StatusHTML, "usageCell(account.weekly_window") {
+		t.Fatal("schedule table does not render usage bars")
 	}
 }
 

@@ -225,16 +225,18 @@ type PreviewView struct {
 
 // RankingView explains one account's position for a model route.
 type RankingView struct {
-	Order        int        `json:"order"`
-	Auth         string     `json:"auth"`
-	Priority     int        `json:"account_priority"`
-	ResetAt      *time.Time `json:"ranking_reset_at,omitempty"`
-	ResetIn      string     `json:"ranking_reset_in"`
-	FiveHour     string     `json:"five_hour"`
-	Weekly       string     `json:"weekly"`
-	Reason       string     `json:"reason"`
-	Next         bool       `json:"next_pick"`
-	LastSelected bool       `json:"last_selected"`
+	Order          int              `json:"order"`
+	Auth           string           `json:"auth"`
+	Priority       int              `json:"account_priority"`
+	ResetAt        *time.Time       `json:"ranking_reset_at,omitempty"`
+	ResetIn        string           `json:"ranking_reset_in"`
+	FiveHour       string           `json:"five_hour"`
+	Weekly         string           `json:"weekly"`
+	WeeklyWindow   *QuotaWindowView `json:"weekly_window,omitempty"`
+	FiveHourWindow *QuotaWindowView `json:"five_hour_window,omitempty"`
+	Reason         string           `json:"reason"`
+	Next           bool             `json:"next_pick"`
+	LastSelected   bool             `json:"last_selected"`
 }
 
 // PickCountView is the JSON shape of one provider's pick counters.
@@ -412,8 +414,9 @@ func windowName(minutes float64) string {
 }
 
 // previewRoutes builds the routing previews from the configured preview_models plus the pins.
-// Pins exist only for routes the plugin routed real traffic for, so the page never invents a
-// provider or model that this deployment does not use.
+// Pins exist only for routes the plugin routed real traffic for. Providers that already have
+// quota readings also get a fill-first order table, so Codex websocket pools still show
+// account priority after a restart with no pin.
 func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthCandidate) []PreviewView {
 	now := h.now().UTC()
 
@@ -437,6 +440,26 @@ func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthC
 		}
 		routes[key] = &PreviewView{Provider: provider, Model: model, Observed: true}
 	}
+	covered := make(map[string]struct{})
+	for _, view := range routes {
+		covered[view.Provider] = struct{}{}
+	}
+	quota := h.sources.Quota()
+	for provider, candidates := range byProvider {
+		provider = previewProvider(provider)
+		if provider == "" {
+			continue
+		}
+		if _, ok := covered[provider]; ok {
+			continue
+		}
+		if !providerHasQuota(candidates, quota) {
+			continue
+		}
+		model := defaultPreviewModel(provider)
+		routes[previewKey(provider, model)] = &PreviewView{Provider: provider, Model: model}
+		covered[provider] = struct{}{}
+	}
 
 	views := make([]PreviewView, 0, len(routes))
 	for _, view := range routes {
@@ -450,7 +473,6 @@ func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthC
 	})
 
 	pins := h.sources.Pins()
-	quota := h.sources.Quota()
 	cfg := h.sources.Config()
 	probeErrors := make(map[string]string)
 	for _, account := range h.sources.Accounts() {
@@ -475,8 +497,8 @@ func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthC
 					reason = "Ordered by reset, priority, then auth ID"
 				}
 			}
-			weekly, fiveHour := quotaSummary(quota[row.AuthID], views[index].Model, now)
-			entry := RankingView{Order: row.Order, Auth: row.AuthID, Priority: row.Priority, FiveHour: fiveHour, Weekly: weekly, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
+			weekly, fiveHour, weeklyWindow, fiveHourWindow := quotaSummary(quota[row.AuthID], views[index].Model, now)
+			entry := RankingView{Order: row.Order, Auth: row.AuthID, Priority: row.Priority, FiveHour: fiveHour, Weekly: weekly, WeeklyWindow: weeklyWindow, FiveHourWindow: fiveHourWindow, Reason: reason, Next: row.Order == 1, ResetIn: "Window reset / not started"}
 			if !row.ResetsAt.IsZero() {
 				reset := row.ResetsAt.UTC()
 				entry.ResetAt = &reset
@@ -508,6 +530,27 @@ func previewKey(provider, model string) string {
 
 func previewProvider(provider string) string {
 	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func providerHasQuota(candidates []pluginapi.SchedulerAuthCandidate, quota router.Quota) bool {
+	for _, candidate := range candidates {
+		account, ok := quota[candidate.ID]
+		if ok && len(account.Windows) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultPreviewModel(provider string) string {
+	switch previewProvider(provider) {
+	case "antigravity":
+		return "gemini-3.8-flash-high"
+	case "codex":
+		return "gpt-6.1-sol"
+	default:
+		return "model"
+	}
 }
 
 func (h *Handler) pickCounts() []PickCountView {
@@ -683,7 +726,7 @@ func ageString(now, moment time.Time) string {
 	}
 }
 
-func quotaSummary(account router.QuotaAccount, model string, now time.Time) (weekly, fiveHour string) {
+func quotaSummary(account router.QuotaAccount, model string, now time.Time) (weekly, fiveHour string, weeklyWindow, fiveHourWindow *QuotaWindowView) {
 	weekly, fiveHour = "—", "—"
 	model = strings.ToLower(model)
 	for _, window := range account.Windows {
@@ -702,23 +745,21 @@ func quotaSummary(account router.QuotaAccount, model string, now time.Time) (wee
 				continue
 			}
 		}
-		left := 100 - window.UsedPercent
-		if left < 0 {
-			left = 0
-		}
-		if left > 100 {
-			left = 100
-		}
+		view := windowView(now, window)
+		left := view.RemainingPct
 		reset := "not started"
-		if !window.ResetsAt.IsZero() {
-			reset = ageString(now, window.ResetsAt.UTC())
+		if view.ResetIn != "" {
+			reset = view.ResetIn
 		}
 		text := fmt.Sprintf("%.0f%% left · %s", left, reset)
+		copyView := view
 		if window.Minutes >= 24*60 {
 			weekly = text
+			weeklyWindow = &copyView
 			continue
 		}
 		fiveHour = text
+		fiveHourWindow = &copyView
 	}
-	return weekly, fiveHour
+	return weekly, fiveHour, weeklyWindow, fiveHourWindow
 }
