@@ -172,23 +172,46 @@ type rankedCandidate struct {
 	candidate pluginapi.SchedulerAuthCandidate
 	resetsAt  time.Time
 	unused    bool
+	// unusedFirst ranks unused accounts before used ones. The default unused rank is last.
+	unusedFirst bool
+}
+
+type unusedRankMode int
+
+const (
+	unusedRankNone unusedRankMode = iota
+	unusedRankLast
+	unusedRankFirst
+)
+
+func unusedRankFor(cfg Config, provider string) unusedRankMode {
+	if preferUsedFor(cfg, provider) {
+		return unusedRankLast
+	}
+	if cfg.PreferUnusedCodex() && normalizeProvider(provider) == "codex" {
+		return unusedRankFirst
+	}
+	return unusedRankNone
 }
 
 // rankByQuota picks the candidate whose longest window resets soonest and still has quota.
 // Candidates without a reading younger than maxAge do not take part; ok is false when no
-// candidate does, so the caller falls back to sticky routing. When preferUsed is set,
-// accounts at 0% used rank after accounts that already have usage.
-func rankByQuota(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, model string, now time.Time, maxAge time.Duration, reservePercent float64, preferUsed bool) (quotaChoice, bool) {
+// candidate does, so the caller falls back to sticky routing. unusedRankLast puts 0% used
+// accounts after used ones; unusedRankFirst puts them first so a real request can start
+// an unused Codex weekly timer.
+func rankByQuota(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, model string, now time.Time, maxAge time.Duration, reservePercent float64, mode unusedRankMode) (quotaChoice, bool) {
 	var best *rankedCandidate
 	for _, candidate := range candidates {
 		resetsAt, reason := quotaCandidateRank(candidate, quota, model, now, maxAge, reservePercent)
 		if reason != "" {
 			continue
 		}
+		unused := mode != unusedRankNone && accountUnused(quota[candidate.ID], model, now, reservePercent)
 		next := rankedCandidate{
-			candidate: candidate,
-			resetsAt:  resetsAt,
-			unused:    preferUsed && accountUnused(quota[candidate.ID], model, now, reservePercent),
+			candidate:   candidate,
+			resetsAt:    resetsAt,
+			unused:      unused,
+			unusedFirst: mode == unusedRankFirst,
 		}
 		if best == nil || ranksBefore(next, *best) {
 			best = &next
@@ -269,10 +292,13 @@ func preferUsedFor(cfg Config, provider string) bool {
 	return cfg.PreferUsed() && freetier.IsProvider(provider)
 }
 
-// ranksBefore orders used accounts ahead of unused ones when that flag is set, then started
+// ranksBefore orders unused accounts first or last when that flag is set, then started
 // windows by soonest reset, then windows that have not started, then priority and auth ID.
 func ranksBefore(a, b rankedCandidate) bool {
 	if a.unused != b.unused {
+		if a.unusedFirst || b.unusedFirst {
+			return a.unused
+		}
 		return !a.unused
 	}
 	aStarted, bStarted := !a.resetsAt.IsZero(), !b.resetsAt.IsZero()
@@ -339,8 +365,10 @@ type CandidateRank struct {
 	ResetsAt time.Time
 	FiveHour string
 	Reason   string
-	// Unused reports that prefer_used put this account after accounts that already have usage.
+	// Unused reports that unused ranking applied to this 0% used account.
 	Unused bool
+	// UnusedFirst reports that unused accounts of this provider rank before used ones.
+	UnusedFirst bool
 }
 
 func quotaCandidateRank(candidate pluginapi.SchedulerAuthCandidate, quota Quota, model string, now time.Time, maxAge time.Duration, reserve float64) (time.Time, string) {
@@ -408,8 +436,12 @@ func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, 
 				_, row.Reason = quotaCandidateRank(candidate, quota, baseModel(model), now, cfg.MaxAge(), cfg.ReservePercent())
 			}
 		}
-		if row.Reason == "" && preferUsedFor(cfg, provider) {
-			row.Unused = accountUnused(evidence, baseModel(model), now, cfg.ReservePercent())
+		if row.Reason == "" {
+			mode := unusedRankFor(cfg, provider)
+			if mode != unusedRankNone {
+				row.Unused = accountUnused(evidence, baseModel(model), now, cfg.ReservePercent())
+				row.UnusedFirst = mode == unusedRankFirst
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -422,8 +454,8 @@ func RankCandidates(candidates []pluginapi.SchedulerAuthCandidate, quota Quota, 
 			return a.AuthID < b.AuthID
 		}
 		return ranksBefore(
-			rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: a.AuthID, Priority: a.Priority}, resetsAt: a.ResetsAt, unused: a.Unused},
-			rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: b.AuthID, Priority: b.Priority}, resetsAt: b.ResetsAt, unused: b.Unused},
+			rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: a.AuthID, Priority: a.Priority}, resetsAt: a.ResetsAt, unused: a.Unused, unusedFirst: a.UnusedFirst},
+			rankedCandidate{candidate: pluginapi.SchedulerAuthCandidate{ID: b.AuthID, Priority: b.Priority}, resetsAt: b.ResetsAt, unused: b.Unused, unusedFirst: b.UnusedFirst},
 		)
 	})
 	order := 0

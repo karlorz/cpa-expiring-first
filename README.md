@@ -27,7 +27,9 @@ Every `probe_interval` (default `5m`) the plugin reads each credential's quota t
 
 `used_percent` is `100 - remaining`, `auth_id` is the CLIProxyAPI credential ID (the auth file name), and each reading carries the reset time the provider reports. FreeTier WorkBuddy remaining/total credits map onto that same used percent (for example `0 / 440` is 0% used).
 
-**FreeTier unused accounts.** `prefer_used` (default true) ranks WorkBuddy accounts that already have usage ahead of unused (0% used) accounts, then still uses soonest package expiry inside each group. That keeps fresh 0% accounts last so fill-first spends the packs that are already open. Set `prefer_used: false` to rank only by expiry. Claude, Codex, Antigravity and xAI are unchanged.
+**FreeTier unused accounts.** `prefer_used` (default true) ranks WorkBuddy accounts that already have usage ahead of unused (0% used) accounts, then still uses soonest package expiry inside each group. That keeps fresh 0% accounts last so fill-first spends the packs that are already open. Set `prefer_used: false` to rank only by expiry. Claude, Antigravity and xAI are unchanged.
+
+**Unused Codex weekly windows.** OpenAI does not start a Codex weekly countdown until the account sends a generation request. `prefer_unused_codex` (default true) ranks those 0% used weekly windows first, including through `write_priorities`, so the next real request starts the timer. After any usage they rejoin weekly-soonest order. If an unused window is still at 0% after `codex_window_start_after` (default `30m`) plus a random `codex_window_start_jitter` (default `10m`), the plugin sends one tiny Codex responses request through `host.http.do` (default model `gpt-6-luna`, Codex CLI User-Agent, short human-like prompt, `store: false`, non-streaming, one account per probe cycle). Disable with `codex_window_start_ping: false`.
 
 **Antigravity model groups.** One Antigravity credential is metered twice. The `gemini` group's windows apply only to models containing `gemini`; the `claude_gpt` group's windows apply only to models containing `claude`, `gpt` or `openai`. Both are probed for every Antigravity credential, and the ranking uses whichever group matches the requested model. The console page shows the group for each account.
 
@@ -42,7 +44,7 @@ Every provider and model route (for example `claude` + `claude-opus-5-5`) is dec
 1. Start from the candidates CLIProxyAPI offers: accounts that are not cooling down or disabled.
 2. Drop accounts that have no reading younger than `max_age` (default `30m`).
 3. Drop accounts with a used-up window. An applicable window counts as used up at `100 - reserve_percent` percent; a window whose reset has passed counts as fresh again.
-4. Rank the rest by the reset of each account's longest applicable window, soonest first. Accounts whose longest window has not started yet (`resets_at: null`, or a reset that has passed) come after them. Ties go to the higher credential `priority`, then the lower auth ID.
+4. Rank the rest by the reset of each account's longest applicable window, soonest first. Accounts whose longest window has not started yet (`resets_at: null`, or a reset that has passed) come after them, except unused Codex weekly windows (0% used), which rank first so a real request starts the OpenAI timer. Ties go to the higher credential `priority`, then the lower auth ID.
 5. Serve the top account.
 
 A window applies to a request when it has no `models` list, or when the model ID contains one of its `models` strings. A model-only weekly limit therefore affects only the models it names.
@@ -55,6 +57,7 @@ In practice:
 | That account runs out | CLIProxyAPI cools it down after its 429, so it drops out, and the next soonest takes over. |
 | Its five-hour limit runs out | Another account covers until the five-hour window resets, then traffic returns: its weekly window still resets first. |
 | Its weekly window resets | Its new window has not started, so the account that resets next takes over. Traffic does not snap back. |
+| A Codex weekly window is still 0% used | It ranks first (and gets a higher fill-first integer) so the next request starts the timer. If it stays unused, one jittered safety request starts it. |
 | A limit reset or a provider change moves a reset date | The next probe cycle re-ranks the accounts. |
 
 **Without fresh readings** (no probe has succeeded yet, the readings are older than `max_age`, or no candidate has a usable reading), the plugin routes stickily:
@@ -234,6 +237,16 @@ plugins:
       # For FreeTier WorkBuddy, rank accounts that already have usage ahead of
       # unused (0% used) accounts. Default true.
       prefer_used: true
+      # Rank unused Codex weekly windows (0% used) first so a real request starts
+      # the OpenAI timer. Default true.
+      prefer_unused_codex: true
+      # If an unused Codex weekly window is still at 0% after the wait, send one
+      # tiny jittered Codex responses request to start the timer. Default true.
+      codex_window_start_ping: true
+      codex_window_start_after: 30m
+      codex_window_start_jitter: 10m
+      # Model for that safety request. Default gpt-6-luna.
+      # codex_window_start_model: gpt-6-luna
       # Credential IDs allowed for Codex Live/Realtime voice traffic.
       # Omit to use all available Codex OAuth credentials; if none, Live stays with the host.
       # live_oauth_ids is the same list.

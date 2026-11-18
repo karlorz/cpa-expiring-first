@@ -22,6 +22,14 @@ const DefaultMaxAge = 30 * time.Minute
 // DefaultProbeInterval is how often the in-process probes refresh every credential's readings.
 const DefaultProbeInterval = 5 * time.Minute
 
+// DefaultCodexWindowStartAfter is how long an unused Codex weekly window may sit at 0% used
+// before a safety request starts the provider timer.
+const DefaultCodexWindowStartAfter = 30 * time.Minute
+
+// DefaultCodexWindowStartJitter is the extra random delay added to CodexWindowStartAfter so
+// unused accounts are not pinged on a shared clock.
+const DefaultCodexWindowStartJitter = 10 * time.Minute
+
 // PreviewModel is one provider+model route the console previews the next pick for. The host
 // configures these in preview_models; nothing else invents a route, so the page never shows a
 // provider or model the deployment does not use.
@@ -66,11 +74,33 @@ type Config struct {
 	// preferUsed ranks FreeTier accounts that already have usage ahead of unused (0% used)
 	// accounts. Default true.
 	preferUsed bool
+	// preferUnusedCodex ranks unused Codex weekly windows (0% used) ahead of started ones so
+	// a real request starts the OpenAI timer. Default true.
+	preferUnusedCodex bool
+	// codexWindowStartPing sends one tiny Codex responses request when an unused weekly window
+	// is still at 0% used after codexWindowStartAfter. Default true.
+	codexWindowStartPing   bool
+	codexWindowStartAfter  time.Duration
+	codexWindowStartJitter time.Duration
+	// codexWindowStartModel is the model used for that safety request. Empty uses gpt-6-luna.
+	codexWindowStartModel string
 }
 
 // DefaultConfig routes every provider stickily, with no quota file.
 func DefaultConfig() Config {
-	return Config{switchAfter: DefaultSwitchAfter, maxAge: DefaultMaxAge, clearCooldowns: true, probeInterval: DefaultProbeInterval, failClosed: true, writePriorities: true, preferUsed: true}
+	return Config{
+		switchAfter:            DefaultSwitchAfter,
+		maxAge:                 DefaultMaxAge,
+		clearCooldowns:         true,
+		probeInterval:          DefaultProbeInterval,
+		failClosed:             true,
+		writePriorities:        true,
+		preferUsed:             true,
+		preferUnusedCodex:      true,
+		codexWindowStartPing:   true,
+		codexWindowStartAfter:  DefaultCodexWindowStartAfter,
+		codexWindowStartJitter: DefaultCodexWindowStartJitter,
+	}
 }
 
 // ClearCooldowns reports whether stale quota cooldowns are cleared.
@@ -149,6 +179,37 @@ func (c Config) PreferUsed() bool {
 	return c.preferUsed
 }
 
+// PreferUnusedCodex reports whether unused Codex weekly windows rank before started ones.
+func (c Config) PreferUnusedCodex() bool {
+	return c.preferUnusedCodex
+}
+
+// CodexWindowStartPing reports whether unused Codex weekly windows get a safety request.
+func (c Config) CodexWindowStartPing() bool {
+	return c.codexWindowStartPing
+}
+
+// CodexWindowStartAfter reports how long an unused Codex weekly window may sit before a ping.
+func (c Config) CodexWindowStartAfter() time.Duration {
+	if c.codexWindowStartAfter < 0 {
+		return DefaultCodexWindowStartAfter
+	}
+	return c.codexWindowStartAfter
+}
+
+// CodexWindowStartJitter reports the extra random delay added to CodexWindowStartAfter.
+func (c Config) CodexWindowStartJitter() time.Duration {
+	if c.codexWindowStartJitter < 0 {
+		return DefaultCodexWindowStartJitter
+	}
+	return c.codexWindowStartJitter
+}
+
+// CodexWindowStartModel reports the model used for the unused-window safety request.
+func (c Config) CodexWindowStartModel() string {
+	return strings.TrimSpace(c.codexWindowStartModel)
+}
+
 func (c Config) PreviewModels() []PreviewModel {
 	if len(c.previewModels) == 0 {
 		return nil
@@ -198,6 +259,11 @@ type rawConfig struct {
 	ProbeAntigravityClaudeGPT *bool          `yaml:"probe_antigravity_claude_gpt"`
 	WritePriorities           *bool          `yaml:"write_priorities"`
 	PreferUsed                *bool          `yaml:"prefer_used"`
+	PreferUnusedCodex         *bool          `yaml:"prefer_unused_codex"`
+	CodexWindowStartPing      *bool          `yaml:"codex_window_start_ping"`
+	CodexWindowStartAfter     string         `yaml:"codex_window_start_after"`
+	CodexWindowStartJitter    string         `yaml:"codex_window_start_jitter"`
+	CodexWindowStartModel     string         `yaml:"codex_window_start_model"`
 }
 
 // ParseConfig decodes the plugins.configs.expiring-first YAML block. Unknown keys such as
@@ -255,6 +321,21 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if parsed.PreferUsed != nil {
 		cfg.preferUsed = *parsed.PreferUsed
+	}
+	if parsed.PreferUnusedCodex != nil {
+		cfg.preferUnusedCodex = *parsed.PreferUnusedCodex
+	}
+	if parsed.CodexWindowStartPing != nil {
+		cfg.codexWindowStartPing = *parsed.CodexWindowStartPing
+	}
+	if cfg.codexWindowStartAfter, errDuration = parseDuration("codex_window_start_after", parsed.CodexWindowStartAfter, cfg.codexWindowStartAfter, 0); errDuration != nil {
+		return Config{}, errDuration
+	}
+	if cfg.codexWindowStartJitter, errDuration = parseDuration("codex_window_start_jitter", parsed.CodexWindowStartJitter, cfg.codexWindowStartJitter, 0); errDuration != nil {
+		return Config{}, errDuration
+	}
+	if model := strings.TrimSpace(parsed.CodexWindowStartModel); model != "" {
+		cfg.codexWindowStartModel = model
 	}
 
 	seenLive := make(map[string]struct{}, len(parsed.LiveAuthIDs)+len(parsed.LiveOAuthIDs))

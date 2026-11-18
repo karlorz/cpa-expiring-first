@@ -1,3 +1,8 @@
+## v0.3.17
+
+- Rank unused Codex weekly windows (0% used) first (`prefer_unused_codex`, default true) and write those integers into credential priority, so real traffic starts the OpenAI weekly timer instead of leaving 100% / 6d accounts at the back of the queue.
+- If an unused Codex weekly window is still at 0% after `codex_window_start_after` (default 30m) plus a random `codex_window_start_jitter` (default 10m), send one tiny Codex responses request (default model `gpt-6-luna`, short human-like prompt pool, Codex CLI User-Agent, one account per probe cycle). Disable with `codex_window_start_ping: false`.
+
 ## v0.3.16
 
 - Retract remembered Live usage limits when `host.auth.list` still includes the credential without `usage_limit_reached` and the remember is longer than 1h. Access-log `POST /v1/realtime/calls` 429s without `resets_at` are remembered for **1h**, matching the StatusMessage fallback, instead of a 7-day weekly guess that stayed stale after Live minutes reset.

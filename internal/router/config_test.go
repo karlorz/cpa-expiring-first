@@ -153,6 +153,28 @@ func TestDefaultConfigHasNoPinnedExamples(t *testing.T) {
 	if !cfg.PreferUsed() {
 		t.Fatal("PreferUsed defaults off")
 	}
+	if !cfg.PreferUnusedCodex() {
+		t.Fatal("PreferUnusedCodex defaults off")
+	}
+	if !cfg.CodexWindowStartPing() {
+		t.Fatal("CodexWindowStartPing defaults off")
+	}
+	if cfg.CodexWindowStartAfter() != DefaultCodexWindowStartAfter || cfg.CodexWindowStartJitter() != DefaultCodexWindowStartJitter {
+		t.Fatalf("window start delays = %s %s", cfg.CodexWindowStartAfter(), cfg.CodexWindowStartJitter())
+	}
+}
+
+func TestParseConfigCodexWindowStart(t *testing.T) {
+	cfg, err := ParseConfig([]byte("prefer_unused_codex: false\ncodex_window_start_ping: false\ncodex_window_start_after: 0s\ncodex_window_start_jitter: 45s\ncodex_window_start_model: gpt-5.5\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PreferUnusedCodex() || cfg.CodexWindowStartPing() {
+		t.Fatal("expected unused ranking and ping off")
+	}
+	if cfg.CodexWindowStartAfter() != 0 || cfg.CodexWindowStartJitter() != 45*time.Second || cfg.CodexWindowStartModel() != "gpt-5.5" {
+		t.Fatalf("window start = after=%s jitter=%s model=%q", cfg.CodexWindowStartAfter(), cfg.CodexWindowStartJitter(), cfg.CodexWindowStartModel())
+	}
 }
 
 func TestParseConfigProbeAntigravityClaudeGPT(t *testing.T) {

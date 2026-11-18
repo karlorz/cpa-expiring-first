@@ -163,7 +163,7 @@ func TestRankCandidatesMatchesPickAndExplainsExclusions(t *testing.T) {
 	if rows[0].AuthID != "soon" || rows[0].Order != 1 || rows[1].AuthID != "later" || rows[1].Order != 2 {
 		t.Fatalf("order=%+v", rows)
 	}
-	choice, ok := rankByQuota(candidates[:6], quota, "gemini-3.8-flash-high", t0, cfg.MaxAge(), cfg.ReservePercent(), false)
+	choice, ok := rankByQuota(candidates[:6], quota, "gemini-3.8-flash-high", t0, cfg.MaxAge(), cfg.ReservePercent(), unusedRankNone)
 	if !ok || rows[0].AuthID != choice.authID {
 		t.Fatal("display and pick differ")
 	}
@@ -273,10 +273,10 @@ func TestAssignPriorityWritesUsesIntegerFillFirstScale(t *testing.T) {
 }
 
 func TestRankCandidatesTiesAndDelegation(t *testing.T) {
-	quota := Quota{"a": reading(weekly(10, t0.Add(time.Hour))), "b": reading(weekly(10, t0.Add(time.Hour))), "unstarted": reading(weekly(0, time.Time{}))}
-	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "a", Priority: 1}, {ID: "b", Priority: 2}, {ID: "unstarted", Priority: 100}}
+	quota := Quota{"a": reading(weekly(10, t0.Add(time.Hour))), "b": reading(weekly(10, t0.Add(time.Hour))), "later": reading(weekly(10, t0.Add(48*time.Hour)))}
+	candidates := []pluginapi.SchedulerAuthCandidate{{ID: "a", Priority: 1}, {ID: "b", Priority: 2}, {ID: "later", Priority: 100}}
 	rows := RankCandidates(candidates, quota, "antigravity", "gemini-3.8-flash-high", t0, DefaultConfig())
-	if rows[0].AuthID != "b" || rows[1].AuthID != "a" || rows[2].AuthID != "unstarted" {
+	if rows[0].AuthID != "b" || rows[1].AuthID != "a" || rows[2].AuthID != "later" {
 		t.Fatalf("ties=%+v", rows)
 	}
 	candidates[0].Attributes = map[string]string{"websockets": "true"}
@@ -284,6 +284,60 @@ func TestRankCandidatesTiesAndDelegation(t *testing.T) {
 	if rows[0].AuthID != "b" || rows[0].Order != 1 {
 		t.Fatalf("codex order=%+v, want weekly-soonest despite websocket candidates", rows)
 	}
+}
+
+func TestPreferUnusedCodexRanksUnusedFirst(t *testing.T) {
+	quota := Quota{
+		"unused-later": reading(weekly(0, t0.Add(6*24*time.Hour))),
+		"used-soon":    reading(weekly(26, t0.Add(2*24*time.Hour))),
+		"used-mid":     reading(weekly(87, t0.Add(3*24*time.Hour))),
+	}
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		{ID: "used-soon", Priority: 100},
+		{ID: "used-mid", Priority: 99},
+		{ID: "unused-later", Priority: 98},
+	}
+	rows := RankCandidates(candidates, quota, "codex", "gpt-6.1-sol", t0, DefaultConfig())
+	if rows[0].AuthID != "unused-later" || !rows[0].Unused || !rows[0].UnusedFirst {
+		t.Fatalf("unused first=%+v", rows)
+	}
+	if rows[1].AuthID != "used-soon" || rows[2].AuthID != "used-mid" {
+		t.Fatalf("used order=%+v", rows)
+	}
+	writes := AssignPriorityWrites(rows)
+	got := map[string]int{}
+	for _, write := range writes {
+		got[write.AuthID] = write.To
+	}
+	if got["unused-later"] != 100 || got["used-soon"] != 99 || got["used-mid"] != 98 {
+		t.Fatalf("priority writes=%+v", writes)
+	}
+
+	off, err := ParseConfig([]byte("prefer_unused_codex: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byExpiry := RankCandidates(candidates, quota, "codex", "gpt-6.1-sol", t0, off)
+	if byExpiry[0].AuthID != "used-soon" || byExpiry[2].AuthID != "unused-later" {
+		t.Fatalf("prefer_unused_codex false order=%+v, want soonest reset", byExpiry)
+	}
+}
+
+func TestPickPrefersUnusedCodexAccounts(t *testing.T) {
+	s := quotaScheduler(t, Quota{
+		"unused-later": reading(weekly(0, t0.Add(6*24*time.Hour))),
+		"used-soon":    reading(weekly(26, t0.Add(2*24*time.Hour))),
+	})
+	req := pluginapi.SchedulerPickRequest{
+		Provider:  "codex",
+		Providers: []string{"codex"},
+		Model:     "gpt-6.1-sol",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "unused-later", Provider: "codex", Priority: 97},
+			{ID: "used-soon", Provider: "codex", Priority: 100},
+		},
+	}
+	mustPick(t, s, req, t0, "unused-later")
 }
 
 func TestCodexWebsocketPoolStillHasWeeklySoonestOrder(t *testing.T) {

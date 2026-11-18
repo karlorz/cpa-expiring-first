@@ -465,6 +465,8 @@ func (h *Handler) previewRoutes(byProvider map[string][]pluginapi.SchedulerAuthC
 			}
 			if reason == "" {
 				switch {
+				case row.Unused && row.UnusedFirst:
+					reason = "Unused weekly window, ranked first to start the timer"
 				case row.Unused:
 					reason = "Unused quota, ranked after accounts with usage"
 				case row.Order == 1:

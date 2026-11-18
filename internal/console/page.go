@@ -125,7 +125,7 @@ const StatusHTML = `<!doctype html>
 
   <section class="card">
     <h2>Schedule outcome</h2>
-    <p class="muted">Current account list ranked weekly-soonest for ordinary traffic, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. FreeTier WorkBuddy credit usage is probed here too; with prefer_used (default) unused 0% accounts rank after accounts that already have usage. Codex Live/Realtime uses the Live Voice section, not this ranking. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
+    <p class="muted">Current account list ranked weekly-soonest for ordinary traffic, then written into credential priority integers (larger = higher) for CPA fill-first. #1 is the predicted next pick. Last selected is the latest actual pick. Antigravity columns are Gemini quota. Codex is probed and ordered here; websocket Codex requests stay with the host, which fill-firsts using these integers. Unused Codex weekly windows (0% used) rank first by default so a real request starts the OpenAI timer; a jittered safety request can start windows that still sit unused. FreeTier WorkBuddy credit usage is probed here too; with prefer_used (default) unused 0% accounts rank after accounts that already have usage. Codex Live/Realtime uses the Live Voice section, not this ranking. Display refresh reloads this list; quota numbers update on the probe interval or Probe now.</p>
     <div id="account-order"></div>
   </section>
 

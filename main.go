@@ -253,6 +253,7 @@ func configure(raw []byte) error {
 	liveAccessLogPath = cfg.LiveAccessLog()
 	liveAccessLogMu.Unlock()
 	probeWorker.Configure(cfg)
+	probeWorker.SetLog(logWarn)
 	probeWorker.Start(hostCallbacks{})
 	return nil
 }
@@ -713,6 +714,11 @@ func configFields() []pluginapi.ConfigField {
 		{Name: "probe_antigravity_claude_gpt", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe Antigravity Claude/GPT/OpenAI quota. Default false: Gemini only."},
 		{Name: "write_priorities", Type: pluginapi.ConfigFieldTypeBoolean, Description: "After each probe, write weekly-soonest order into credential priority integers (larger = higher) so CPA fill-first follows that queue. Default true."},
 		{Name: "prefer_used", Type: pluginapi.ConfigFieldTypeBoolean, Description: "For FreeTier WorkBuddy accounts, rank credentials that already have usage ahead of unused (0% used) ones, so fresh accounts stay last. Default true."},
+		{Name: "prefer_unused_codex", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rank unused Codex weekly windows (0% used) first so a real request starts the OpenAI timer. Default true."},
+		{Name: "codex_window_start_ping", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Send one tiny jittered Codex responses request when an unused weekly window is still at 0% used after the wait. Default true."},
+		{Name: "codex_window_start_after", Type: pluginapi.ConfigFieldTypeString, Description: "How long an unused Codex weekly window may sit at 0% used before the safety request. Default 30m."},
+		{Name: "codex_window_start_jitter", Type: pluginapi.ConfigFieldTypeString, Description: "Extra random delay added to codex_window_start_after so unused accounts are not pinged together. Default 10m."},
+		{Name: "codex_window_start_model", Type: pluginapi.ConfigFieldTypeString, Description: "Model for the unused Codex weekly safety request. Default gpt-6-luna."},
 		{Name: "live_auth_ids", Type: pluginapi.ConfigFieldTypeArray, Description: "Credential IDs allowed for Codex Live/Realtime voice traffic, in fill-first order. Alias: live_oauth_ids. Default empty: all available Codex OAuth credentials; if none, host built-in scheduler."},
 		{Name: "live_state_file", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute path of a JSON file that keeps last-used Live picks and remembered Live usage-limit deadlines across reloads. Default empty: memory only."},
 		{Name: "live_access_log", Type: pluginapi.ConfigFieldTypeString, Description: "Absolute gin access-log path. A POST /v1/realtime/calls 429 after the last Live pick is remembered for 1h when Codex did not give resets_at. Default empty: do not scan logs."},

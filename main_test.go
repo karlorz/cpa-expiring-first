@@ -217,17 +217,17 @@ func TestConfigFieldsDeclarePluginDefaults(t *testing.T) {
 	for _, name := range []string{
 		"providers", "quota_file", "max_age", "reserve_percent", "clear_stale_cooldowns",
 		"switch_after", "pins_file", "probe_interval", "preview_models",
-		"probe_antigravity_claude_gpt", "write_priorities", "prefer_used", "live_auth_ids", "live_state_file", "live_access_log", "fail_closed",
+		"probe_antigravity_claude_gpt", "write_priorities", "prefer_used", "prefer_unused_codex", "codex_window_start_ping", "codex_window_start_after", "codex_window_start_jitter", "codex_window_start_model", "live_auth_ids", "live_state_file", "live_access_log", "fail_closed",
 	} {
 		field, ok := got[name]
 		if !ok || field.Description == "" {
 			t.Errorf("config field %s missing from the Plugins form", name)
 		}
 	}
-	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") || !strings.Contains(got["live_auth_ids"].Description, "all available Codex") || !strings.Contains(got["live_auth_ids"].Description, "live_oauth_ids") || !strings.Contains(got["live_access_log"].Description, "1h") {
+	if !strings.Contains(got["max_age"].Description, "30m") || !strings.Contains(got["write_priorities"].Description, "Default true") || !strings.Contains(got["prefer_used"].Description, "Default true") || !strings.Contains(got["prefer_unused_codex"].Description, "Default true") || !strings.Contains(got["codex_window_start_ping"].Description, "Default true") || !strings.Contains(got["codex_window_start_after"].Description, "30m") || !strings.Contains(got["codex_window_start_model"].Description, "gpt-6-luna") || !strings.Contains(got["probe_antigravity_claude_gpt"].Description, "Default false") || !strings.Contains(got["live_auth_ids"].Description, "all available Codex") || !strings.Contains(got["live_auth_ids"].Description, "live_oauth_ids") || !strings.Contains(got["live_access_log"].Description, "1h") {
 		t.Fatalf("form descriptions missing defaults")
 	}
-	if cfg.MaxAge() != 30*time.Minute || cfg.ProbeInterval() != 5*time.Minute || !cfg.WritePriorities() || !cfg.PreferUsed() || cfg.ProbeAntigravityClaudeGPT() {
-		t.Fatalf("ParseConfig defaults = max_age=%s probe_interval=%s write_priorities=%v prefer_used=%v claude_gpt=%v", cfg.MaxAge(), cfg.ProbeInterval(), cfg.WritePriorities(), cfg.PreferUsed(), cfg.ProbeAntigravityClaudeGPT())
+	if cfg.MaxAge() != 30*time.Minute || cfg.ProbeInterval() != 5*time.Minute || !cfg.WritePriorities() || !cfg.PreferUsed() || !cfg.PreferUnusedCodex() || !cfg.CodexWindowStartPing() || cfg.CodexWindowStartAfter() != 30*time.Minute || cfg.ProbeAntigravityClaudeGPT() {
+		t.Fatalf("ParseConfig defaults = max_age=%s probe_interval=%s write_priorities=%v prefer_used=%v prefer_unused_codex=%v ping=%v after=%s claude_gpt=%v", cfg.MaxAge(), cfg.ProbeInterval(), cfg.WritePriorities(), cfg.PreferUsed(), cfg.PreferUnusedCodex(), cfg.CodexWindowStartPing(), cfg.CodexWindowStartAfter(), cfg.ProbeAntigravityClaudeGPT())
 	}
 }

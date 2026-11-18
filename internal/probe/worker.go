@@ -2,9 +2,9 @@
 //
 // The worker probes Antigravity, Claude, Codex, xAI and FreeTier WorkBuddy credentials through
 // the host's HTTP transport, never through the provider SDKs, and publishes one snapshot per
-// cycle. Picks read
-// the snapshot; they never call a provider. The only credential write the plugin ever performs
-// stays in main.go, where stale cooldowns are cleared through host.routing.reset_cooldown.
+// cycle. After a cycle it may send one tiny Codex responses request to start an unused weekly
+// window. Picks read the snapshot; they never call a provider. Credential JSON writes from this
+// package are the fill-first priority integers; stale cooldown clears stay in main.go.
 package probe
 
 import (
@@ -93,6 +93,7 @@ type Worker struct {
 	probeAntigravityClaudeGPT bool
 	writePriorities           bool
 	ranking                   router.Config
+	starter                   *windowStarter
 	// cancel stops the background loop; nil while it is not running.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -100,7 +101,17 @@ type Worker struct {
 
 // NewWorker returns a worker that publishes readings into memory.
 func NewWorker(memory *router.MemoryQuota) *Worker {
-	return &Worker{memory: memory, interval: DefaultInterval}
+	return &Worker{memory: memory, interval: DefaultInterval, starter: newWindowStarter()}
+}
+
+// SetLog receives sanitized window-start messages. A nil log discards them.
+func (w *Worker) SetLog(log func(string)) {
+	w.mu.Lock()
+	starter := w.starter
+	w.mu.Unlock()
+	if starter != nil {
+		starter.setLog(log)
+	}
 }
 
 // SetInterval changes how often the background loop probes.
@@ -228,6 +239,7 @@ func (w *Worker) Refresh(ctx context.Context, callbacks host.Callbacks) Snapshot
 	}
 	snapshot := w.publish(Snapshot{At: time.Now().UTC(), Accounts: accounts})
 	w.applyPriorityWrites(ctx, client, snapshot)
+	w.startUnusedCodexWindows(ctx, client, credentials, snapshot)
 	return snapshot
 }
 
